@@ -33,3 +33,8 @@ form.stack > .btn.primary{margin-top:26px}
 .rent-sheet h2 { margin: 0; }
 
 .receipt-review > .content > h1 { font-size: 20px; }
+
+/* Keep focused form fields at Safari's minimum size for avoiding auto-zoom. */
+@media (max-width: 767px), (hover: none) and (pointer: coarse) {
+  input, select, textarea { font-size: 16px; }
+}
