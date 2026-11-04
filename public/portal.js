@@ -85,6 +85,8 @@ function render(){
    }
  }
  if(page==='review')app.innerHTML=shell('Review',content('Receipt review','Verify uploaded proof of payment and issue the tenant’s receipt.',queue.length?'<div class="stack">'+queue.map(r=>'<article class="card"><h2>'+esc(r.email)+'</h2><p>'+money(r.amount)+(r.paid?' · Paid '+esc(r.paid):'')+'</p><a class="btn" href="/api/file?id='+encodeURIComponent(r.id)+'">Download proof</a> '+btn('Verify and issue receipt','approve:'+r.id,'primary')+'</article>').join('')+'</div>':'<article class="card"><p>No receipts are waiting for review.</p></article>'));
+ app.querySelectorAll('select').forEach(enhanceSelect);
+ app.querySelectorAll('input[type="date"]').forEach(enhanceDate);
  const activeForm = app.querySelector('form[data-form]');
  if (!activeForm) return;
  const submitButton = activeForm.querySelector('button:not([type])');
@@ -106,6 +108,266 @@ function render(){
  }
  syncValidity();
 }
+function enhanceSelect(select) {
+  const wrapper = document.createElement('div');
+  wrapper.className = 'select-picker';
+  select.before(wrapper);
+  wrapper.append(select);
+  select.classList.add('picker-native');
+  select.tabIndex = -1;
+  select.setAttribute('aria-hidden', 'true');
+
+  const trigger = document.createElement('button');
+  trigger.type = 'button';
+  trigger.className = 'select-trigger';
+  trigger.setAttribute('role', 'combobox');
+  trigger.setAttribute('aria-haspopup', 'listbox');
+  trigger.setAttribute('aria-expanded', 'false');
+  trigger.setAttribute('aria-label', select.getAttribute('aria-label') || select.labels?.[0]?.firstChild?.textContent.trim() || select.name);
+  const list = document.createElement('div');
+  list.className = 'select-menu';
+  list.id = 'options-' + crypto.randomUUID();
+  list.setAttribute('role', 'listbox');
+  list.setAttribute('aria-label', trigger.getAttribute('aria-label'));
+  list.hidden = true;
+  trigger.setAttribute('aria-controls', list.id);
+  wrapper.append(trigger, list);
+
+  function close() {
+    list.hidden = true;
+    trigger.setAttribute('aria-expanded', 'false');
+  }
+  function update() {
+    trigger.textContent = select.selectedOptions[0]?.textContent || 'Select an option';
+    trigger.classList.toggle('placeholder', !select.value);
+    list.replaceChildren();
+    for (const option of select.options) {
+      if (!option.value) continue;
+      const item = document.createElement('button');
+      item.type = 'button';
+      item.className = 'select-option';
+      item.textContent = option.textContent;
+      item.setAttribute('role', 'option');
+      item.setAttribute('aria-selected', String(select.value === option.value));
+      item.tabIndex = -1;
+      item.disabled = option.disabled;
+      item.addEventListener('click', () => {
+        select.value = option.value;
+        select.dispatchEvent(new Event('change', { bubbles: true }));
+        close();
+        trigger.focus();
+      });
+      list.append(item);
+    }
+  }
+  function open(position) {
+    document.querySelectorAll('.select-menu').forEach(menu => {
+      if (menu !== list) {
+        menu.hidden = true;
+        menu.previousElementSibling.setAttribute('aria-expanded', 'false');
+      }
+    });
+    list.hidden = false;
+    trigger.setAttribute('aria-expanded', 'true');
+    const items = [...list.querySelectorAll('button:not(:disabled)')];
+    const selected = items.find(item => item.getAttribute('aria-selected') === 'true');
+    const target = position === 'last' ? items.at(-1) : position === 'first' ? items[0] : selected || items[0];
+    target?.focus();
+    target?.scrollIntoView({ block: 'nearest' });
+  }
+  trigger.addEventListener('click', () => list.hidden ? open() : close());
+  trigger.addEventListener('keydown', event => {
+    if (['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) {
+      event.preventDefault();
+      open(event.key === 'End' || event.key === 'ArrowUp' ? 'last' : 'first');
+    }
+  });
+  let search = '';
+  let searchTimer;
+  list.addEventListener('keydown', event => {
+    const items = [...list.querySelectorAll('button:not(:disabled)')];
+    const index = items.indexOf(document.activeElement);
+    let next;
+    if (event.key === 'ArrowDown') next = items[(index + 1) % items.length];
+    if (event.key === 'ArrowUp') next = items[(index - 1 + items.length) % items.length];
+    if (event.key === 'Home') next = items[0];
+    if (event.key === 'End') next = items.at(-1);
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      event.stopPropagation();
+      close();
+      trigger.focus();
+    }
+    if (event.key === 'Tab') close();
+    if (event.key.length === 1 && !event.ctrlKey && !event.metaKey && event.key !== ' ') {
+      search += event.key.toLowerCase();
+      clearTimeout(searchTimer);
+      searchTimer = setTimeout(() => { search = ''; }, 600);
+      next = items.find(item => item.textContent.toLowerCase().startsWith(search));
+    }
+    if (next) {
+      event.preventDefault();
+      next.focus();
+    }
+  });
+  wrapper.addEventListener('focusout', event => {
+    if (!wrapper.contains(event.relatedTarget)) close();
+  });
+  select.addEventListener('change', update);
+  select.addEventListener('invalid', event => {
+    event.preventDefault();
+    trigger.focus();
+  });
+  update();
+}
+
+function enhanceDate(input) {
+  const wrapper = document.createElement('div');
+  wrapper.className = 'date-picker';
+  input.before(wrapper);
+  wrapper.append(input);
+  input.classList.add('picker-native');
+  input.tabIndex = -1;
+  input.setAttribute('aria-hidden', 'true');
+
+  const trigger = document.createElement('button');
+  trigger.type = 'button';
+  trigger.className = 'select-trigger date-trigger';
+  trigger.setAttribute('aria-haspopup', 'dialog');
+  const label = input.labels?.[0]?.firstChild?.textContent.trim() || 'Date';
+  trigger.setAttribute('aria-label', label);
+  wrapper.append(trigger);
+  function updateTrigger() {
+    trigger.textContent = input.value
+      ? new Date(input.value + 'T12:00:00').toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' })
+      : 'Select a date';
+    trigger.classList.toggle('placeholder', !input.value);
+  }
+  input.addEventListener('change', updateTrigger);
+  input.addEventListener('invalid', event => {
+    event.preventDefault();
+    trigger.focus();
+  });
+  updateTrigger();
+  trigger.addEventListener('click', () => {
+    const maximum = input.max || today;
+    const maxYear = Number(maximum.slice(0, 4));
+    const initial = input.value || (maxYear - 18) + '-01-01';
+    let selected = input.value;
+    let year = Number(initial.slice(0, 4));
+    let month = Number(initial.slice(5, 7)) - 1;
+    const minimumYear = input.min ? Number(input.min.slice(0, 4)) : 1900;
+    const dialog = document.createElement('dialog');
+    dialog.className = 'date-sheet';
+    dialog.setAttribute('aria-label', 'Choose ' + label.toLowerCase());
+    dialog.innerHTML = '<div class="row"><h2></h2><button type="button" class="btn quiet date-close" aria-label="Close calendar">✕</button></div>' +
+      '<p class="date-description">Choose your month, year, and day.</p>' +
+      '<div class="calendar-toolbar"><button type="button" class="btn calendar-prev" aria-label="Previous month">‹</button>' +
+      '<select class="calendar-month" aria-label="Month"></select><select class="calendar-year" aria-label="Year"></select>' +
+      '<button type="button" class="btn calendar-next" aria-label="Next month">›</button></div>' +
+      '<div class="calendar-weekdays" aria-hidden="true">' + ['M','T','W','T','F','S','S'].map(day => '<span>'+day+'</span>').join('') + '</div>' +
+      '<div class="calendar-days" role="group" aria-label="Days"></div>' +
+      '<p class="calendar-selection" aria-live="polite"></p>' +
+      '<button type="button" class="btn primary calendar-confirm">Confirm date</button>';
+    dialog.querySelector('h2').textContent = label;
+    const monthControl = dialog.querySelector('.calendar-month');
+    const yearControl = dialog.querySelector('.calendar-year');
+    for (let index = 0; index < 12; index++) {
+      monthControl.add(new Option(new Date(2000, index, 1).toLocaleDateString('en-GB', { month: 'long' }), String(index)));
+    }
+    for (let value = maxYear; value >= minimumYear; value--) yearControl.add(new Option(String(value), String(value)));
+    monthControl.value = String(month);
+    yearControl.value = String(year);
+    app.append(dialog);
+    enhanceSelect(monthControl);
+    enhanceSelect(yearControl);
+    const close = () => {
+      dialog.close();
+      dialog.remove();
+      trigger.focus();
+    };
+    dialog.querySelector('.date-close').addEventListener('click', close);
+    dialog.addEventListener('cancel', event => { event.preventDefault(); close(); });
+    const grid = dialog.querySelector('.calendar-days');
+    function paint() {
+      grid.replaceChildren();
+      const firstWeekday = (new Date(year, month, 1).getDay() + 6) % 7;
+      const count = new Date(year, month + 1, 0).getDate();
+      for (let index = 0; index < firstWeekday; index++) grid.append(document.createElement('span'));
+      for (let day = 1; day <= count; day++) {
+        const value = year + '-' + String(month + 1).padStart(2, '0') + '-' + String(day).padStart(2, '0');
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'calendar-day';
+        button.textContent = String(day);
+        button.dataset.date = value;
+        button.disabled = value > maximum || Boolean(input.min && value < input.min);
+        button.setAttribute('aria-label', new Date(year, month, day).toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' }));
+        button.setAttribute('aria-pressed', String(value === selected));
+        button.addEventListener('click', () => {
+          selected = value;
+          paint();
+          grid.querySelector('[data-date="'+value+'"]').focus();
+        });
+        grid.append(button);
+      }
+      dialog.querySelector('.calendar-prev').disabled = year === minimumYear && month === 0;
+      dialog.querySelector('.calendar-next').disabled = year === maxYear && month >= Number(maximum.slice(5, 7)) - 1;
+      dialog.querySelector('.calendar-confirm').disabled = !selected;
+      dialog.querySelector('.calendar-selection').textContent = selected
+        ? new Date(selected + 'T12:00:00').toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' })
+        : 'No date selected';
+    }
+    function syncMonth() {
+      monthControl.value = String(month);
+      yearControl.value = String(year);
+      monthControl.dispatchEvent(new Event('change'));
+      yearControl.dispatchEvent(new Event('change'));
+    }
+    monthControl.addEventListener('change', () => { month = Number(monthControl.value); paint(); });
+    yearControl.addEventListener('change', () => { year = Number(yearControl.value); paint(); });
+    dialog.querySelector('.calendar-prev').addEventListener('click', () => {
+      if (month === 0) { year--; month = 11; } else month--;
+      syncMonth();
+    });
+    dialog.querySelector('.calendar-next').addEventListener('click', () => {
+      if (month === 11) { year++; month = 0; } else month++;
+      syncMonth();
+    });
+    grid.addEventListener('keydown', event => {
+      const offsets = { ArrowLeft: -1, ArrowRight: 1, ArrowUp: -7, ArrowDown: 7 };
+      const offset = offsets[event.key];
+      if (!offset || !event.target.dataset.date) return;
+      event.preventDefault();
+      const next = new Date(event.target.dataset.date + 'T12:00:00');
+      next.setDate(next.getDate() + offset);
+      const value = next.getFullYear() + '-' + String(next.getMonth()+1).padStart(2,'0') + '-' + String(next.getDate()).padStart(2,'0');
+      if (value > maximum || next.getFullYear() < minimumYear || (input.min && value < input.min)) return;
+      year = next.getFullYear();
+      month = next.getMonth();
+      syncMonth();
+      grid.querySelector('[data-date="'+value+'"]').focus();
+    });
+    dialog.querySelector('.calendar-confirm').addEventListener('click', () => {
+      input.value = selected;
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      input.dispatchEvent(new Event('change', { bubbles: true }));
+      close();
+    });
+    paint();
+    dialog.showModal();
+  });
+}
+
+document.addEventListener('click', event => {
+  for (const menu of document.querySelectorAll('.select-menu:not([hidden])')) {
+    if (!menu.parentElement.contains(event.target)) {
+      menu.hidden = true;
+      menu.previousElementSibling.setAttribute('aria-expanded', 'false');
+    }
+  }
+});
+
 function tenantPage() {
  if (!user) return 'login';
  if (!user.first || !user.gender || !user.dob) return 'profile';
