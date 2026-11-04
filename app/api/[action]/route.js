@@ -163,12 +163,27 @@ async function mutate(db, action, data, email, admin, token, secure) {
   const current = await loadUser(db, email, admin);
   switch (action) {
     case 'profile': {
-      const profile = { first: field(data, 'first', 80), last: field(data, 'last', 80), phone: field(data, 'phone', 30) };
+      const dob = dateField(data, 'dob');
+      const today = new Date().toLocaleDateString('sv-SE', { timeZone: 'Africa/Lagos' });
+      const gender = field(data, 'gender', 40);
+      if (dob >= today) throw new RequestError('Enter a date of birth in the past.');
+      if (!['Female', 'Male', 'Non-binary', 'Prefer not to say'].includes(gender)) {
+        throw new RequestError('Choose a gender option.');
+      }
+      const { rows: [tenant] } = await db.query('SELECT profile FROM tenants WHERE email=$1', [email]);
+      const profile = {
+        ...JSON.parse(tenant.profile || '{}'),
+        first: field(data, 'first', 80),
+        last: field(data, 'last', 80),
+        phone: field(data, 'phone', 30),
+        gender,
+        dob,
+      };
       await db.query('UPDATE tenants SET profile=$1 WHERE email=$2', [JSON.stringify(profile), email]);
       break;
     }
     case 'guarantor': {
-      if (!current.first) throw new RequestError('Complete your profile first.', 403);
+      if (!current.first || !current.gender || !current.dob) throw new RequestError('Complete your profile first.', 403);
       const guarantor = {
         name: field(data, 'name'),
         relationship: field(data, 'relationship'),
@@ -178,26 +193,26 @@ async function mutate(db, action, data, email, admin, token, secure) {
       await db.query('UPDATE tenants SET guarantor=$1 WHERE email=$2', [JSON.stringify(guarantor), email]);
       break;
     }
-    case 'activate': {
-      if (!current.guarantor || current.rent) throw new RequestError('This action is unavailable.', 403);
-      if (data.consent !== 'on') throw new RequestError('Agree to the tenant consent terms.');
-      const paid = dateField(data, 'paid');
-      const dob = dateField(data, 'dob');
-      const today = new Date().toLocaleDateString('sv-SE', { timeZone: 'Africa/Lagos' });
-      const amountText = field(data, 'amount', 20);
-      const occupantsText = field(data, 'occupants', 3);
-      const amount = Number(amountText);
-      const occupants = Number(occupantsText);
-      if (!/^\d+(\.\d{1,2})?$/.test(amountText) || amount < 0.01 || amount > 1e9 ||
-          !/^\d+$/.test(occupantsText) || occupants < 1 || occupants > 100 || paid > today || dob >= today) {
-        throw new RequestError('Check your payment date, amount, occupant count, and date of birth.');
+    case 'consent': {
+      if (!current.first || !current.gender || !current.dob || !current.guarantor) {
+        throw new RequestError('Complete your personal and guarantor details first.', 403);
       }
-      const rent = { paid, dob, amount, occupants, consent_version: 1, consented_at: new Date().toISOString() };
-      await db.query('UPDATE tenants SET rent=$1 WHERE email=$2', [JSON.stringify(rent), email]);
+      if (data.consent !== 'on') throw new RequestError('Agree to the tenant consent terms.');
+      const { rows: [tenant] } = await db.query('SELECT profile FROM tenants WHERE email=$1', [email]);
+      const profile = JSON.parse(tenant.profile);
+      profile.agreement = { version: 1, acceptedAt: new Date().toISOString() };
+      await db.query('UPDATE tenants SET profile=$1 WHERE email=$2', [JSON.stringify(profile), email]);
       break;
     }
-    case 'receipt': {
-      if (!current.rent || current.receipt) throw new RequestError('This action is unavailable.', 403);
+    case 'activate': {
+      if (!current.guarantor || !current.agreement || current.receipt) {
+        throw new RequestError('This action is unavailable.', 403);
+      }
+      const amountText = field(data, 'amount', 20);
+      const amount = Number(amountText);
+      if (!/^\d+(\.\d{1,2})?$/.test(amountText) || amount < 0.01 || amount > 1e9) {
+        throw new RequestError('Enter a valid payment amount.');
+      }
       const name = field(data, 'name', 240).split(/[\\/]/).at(-1);
       const encoded = field(data, 'file', 4_250_000);
       const bytes = Buffer.from(encoded, 'base64');
@@ -207,6 +222,8 @@ async function mutate(db, action, data, email, admin, token, secure) {
       if (!name || !mime || bytes.length > maxFileSize || bytes.toString('base64') !== encoded) {
         throw new RequestError('Choose a PDF, JPG, or PNG up to 3 MB.');
       }
+      const rent = { ...current.rent, amount, submittedAt: new Date().toISOString() };
+      await db.query('UPDATE tenants SET rent=$1 WHERE email=$2', [JSON.stringify(rent), email]);
       await db.query("INSERT INTO receipts(email,name,mime,bytes,status) VALUES($1,$2,$3,$4,'pending')", [email, name, mime, bytes]);
       break;
     }
@@ -222,7 +239,7 @@ async function mutate(db, action, data, email, admin, token, secure) {
         'Official rent receipt WJ-' + String(receipt.id).padStart(6, '0'),
         '',
         'Tenant: ' + tenant.first + ' ' + tenant.last,
-        'Payment date: ' + tenant.rent.paid,
+        ...(tenant.rent.paid ? ['Payment date: ' + tenant.rent.paid] : []),
         'Amount received: NGN ' + amount,
       ].join('\n');
       await sendMail(receipt.email, 'Your official Wakajaye rent receipt', 'Your rent payment has been verified. Your official receipt is attached.', text);
