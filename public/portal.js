@@ -9,6 +9,15 @@ const btn=(label,action,cls='')=>'<button type="button" class="btn '+cls+'" data
 const submit=(label,attrs='')=>'<button class="btn primary" '+attrs+'>'+label+'</button>';
 const form=(name,contents)=>'<form class="stack" data-form="'+name+'">'+contents+'<p class="error" role="alert" hidden></p></form>';
 let user=null,email='',mode='create',page='login',queue=[];
+let agreementText = '';
+const agreementVersion = 2;
+const agreementUrl = '/residential-tenancy-agreement-v2.txt';
+async function loadAgreement() {
+  if (agreementText) return;
+  const response = await fetch(agreementUrl);
+  if (!response.ok) throw Error('Could not load the agreement. Please try again.');
+  agreementText = await response.text();
+}
 const dateParts=Object.fromEntries(new Intl.DateTimeFormat('en-CA',{timeZone:'Africa/Lagos',year:'numeric',month:'2-digit',day:'2-digit'}).formatToParts(new Date()).map(p=>[p.type,p.value]));
 const today=[dateParts.year,dateParts.month,dateParts.day].join('-');
 const money=v=>new Intl.NumberFormat('en-NG',{style:'currency',currency:'NGN'}).format(v);
@@ -18,6 +27,10 @@ function auth(title,desc,body,step=''){return '<main class="auth"><section class
 function shell(title,body){return '<div class="frame"><div class="shell"><aside class="sidebar"><div class="brand">'+logo+'</div><nav class="nav" aria-label="Tenant portal">'+([['Home','home'],['Receipts','receipts'],...(user.admin?[['Review','review']]:[])]).map(([n,p])=>btn(icon(n)+n,p,'quiet '+(page===p?'active':'')).replace('data-go=',(page===p?'aria-current="page" ':'')+'data-go=')).join('')+'</nav><footer><div class="account" title="'+esc(user.email)+'">'+esc(user.email)+'</div>'+btn('Sign out','logout','quiet')+'</footer></aside><main class="main'+(page==='review'?' receipt-review':'')+'"><header class="bar">'+title+'</header>'+body+'</main></div></div>'}
 function content(title,desc,body,narrow=false){return '<section class="content '+(narrow?'narrow':'')+'"><h1>'+title+'</h1><p>'+desc+'</p>'+body+'</section>'}
 function render(){
+ if (page === 'agreement-error') {
+   app.innerHTML = auth('Agreement unavailable', 'Please retry loading the tenancy agreement.', btn('Try again', 'consent', 'primary'));
+   return;
+ }
  const rent=user?.rent, receipt=user?.receipt;
  if(page==='login')app.innerHTML=auth(mode==='create'?'Create your account':'Get into your account','Enter your email to receive a one-time code.',form('code',input('Email address','email','email','autocomplete="email" placeholder="you@example.com" value="'+esc(email)+'"')+submit('Send code'))+'<p class="switch">'+(mode==='create'?'Already have an account?':'New to Wakajaye?')+' <button class="link" data-go="toggle">'+(mode==='create'?'Sign in':'Create an account')+'</button></p>');
  if(page==='verify')app.innerHTML=auth('Check your email','Enter the six-digit code for <strong>'+esc(email)+'</strong>.',form('verify',input('Verification code','code','text','inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6"')+submit('Verify email'))+'<p class="switch"><button class="link" data-go="resend">Resend code</button> · <button class="link" data-go="login">Change email</button></p>');
@@ -41,14 +54,16 @@ function render(){
        input('Email address (optional)', 'email', 'email', 'maxlength="254"', false) + submit('Continue')), 'Step 2 of 3');
  }
  if (page === 'consent') {
-   const agreement = `<div class="terms" tabindex="0" aria-label="Tenant consent and agreement">
-     <p><strong>1. Personal details</strong><br>Confirm the information you provided for your tenancy is accurate. Tell the hostel if it changes.</p>
-     <p><strong>2. Guarantor details</strong><br>Confirm you have permission to share your guarantor’s contact information with Wakajaye for tenancy administration.</p>
-     <p><strong>3. Proof of payment</strong><br>Provide the correct amount and a readable receipt. The landlord will review your submission before activating your rent.</p>
-     <p><strong>4. Tenant records</strong><br>Wakajaye will use these details to manage your tenancy, verify your payment, and email your official receipt after approval.</p>
-     <p>End of agreement.</p>
-   </div><p class="hint">Scroll to the end to enable the checkbox.</p>
-   <label class="check"><input type="checkbox" name="consent" required disabled>I have read and agree to these terms.</label>`;
+   const paragraphs = agreementText.trim().split(/\n\s*\n/).map((paragraph, index) => {
+     const text = esc(paragraph).replace(/\n/g, '<br>');
+     return index === 0 || /^\d+\. [A-Z]/.test(paragraph)
+       ? '<h2>'+text+'</h2>' : '<p>'+text+'</p>';
+   }).join('');
+   const agreement = '<a class="agreement-download" href="'+agreementUrl+'" download>Download agreement (.txt)</a>'+
+     '<div class="terms" tabindex="0" role="region" aria-label="Residential tenancy agreement" aria-describedby="agreement-progress">'+paragraphs+'</div>'+
+     '<p class="hint" id="agreement-progress" aria-live="polite">Scroll to the bottom of the agreement to enable the checkbox.</p>'+
+     '<input type="hidden" name="agreementVersion" value="'+agreementVersion+'">'+
+     '<label class="check"><input type="checkbox" name="consent" required disabled>I have read and agree to the Residential Tenancy Agreement.</label>';
    app.innerHTML = auth('Consent and agreement', 'Read and accept the agreement to finish onboarding.',
      form('consent', agreement + submit('Accept and continue')), 'Step 3 of 3');
  }
@@ -101,7 +116,12 @@ function render(){
  if (terms) {
    const consent = activeForm.elements.consent;
    const unlockConsent = () => {
-     if (terms.scrollTop + terms.clientHeight >= terms.scrollHeight - 2) consent.disabled = false;
+     if (agreementText && terms.clientHeight > 0 &&
+         terms.scrollTop + terms.clientHeight >= terms.scrollHeight - 2) {
+       consent.disabled = false;
+       activeForm.querySelector('#agreement-progress').textContent =
+         'You have reached the end. You can now tick the confirmation box.';
+     }
      syncValidity();
    };
    terms.addEventListener('scroll', unlockConsent);
@@ -373,7 +393,7 @@ function tenantPage() {
  if (!user) return 'login';
  if (!user.first || !user.gender || !user.dob) return 'profile';
  if (!user.guarantor) return 'guarantor';
- if (!user.agreement) return 'consent';
+ if (user.agreement?.version !== agreementVersion) return 'consent';
  return 'home';
 }
 async function go(p){
@@ -392,6 +412,7 @@ async function go(p){
  if(p==='resend'){await api('code',{email,mode});return toast('A new code was requested.')}
  if(p==='review')queue=(await api('queue')).queue;
  if(p.startsWith('approve:')){await api('approve',{id:Number(p.split(':')[1])});queue=(await api('queue')).queue;toast('Receipt verified and issued.');return render()}
+ if (p === 'consent') await loadAgreement();
  page=p;render();
 }
 function setButtonLoading(button, loading) {
@@ -437,7 +458,9 @@ app.addEventListener('submit',async e=>{
  try {
    ({user} = await api('session'));
    page = tenantPage();
+   if (page === 'consent') await loadAgreement();
  } catch (error) {
+   if (page === 'consent') page = 'agreement-error';
    toast(error.message);
  }
  render();

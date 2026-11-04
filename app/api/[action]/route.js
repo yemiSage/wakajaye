@@ -2,6 +2,7 @@ import { createHash, randomBytes, randomInt, timingSafeEqual } from 'node:crypto
 import { NextResponse } from 'next/server';
 import pg from 'pg';
 import supabaseCA from './supabase-ca';
+import agreement from './agreement.json';
 
 export const runtime = 'nodejs';
 
@@ -184,12 +185,12 @@ async function mutate(db, action, data, email, admin, token, secure) {
     }
     case 'guarantor': {
       if (!current.first || !current.gender || !current.dob) throw new RequestError('Complete your profile first.', 403);
-      const email = typeof data.email === 'string' ? data.email.trim() : data.email;
+      const guarantorEmail = typeof data.email === 'string' ? data.email.trim() : data.email;
       const guarantor = {
         name: field(data, 'name'),
         relationship: field(data, 'relationship'),
         phone: field(data, 'phone', 30),
-        email: email == null || email === '' ? null : emailField({ email }),
+        email: guarantorEmail == null || guarantorEmail === '' ? null : emailField({ email: guarantorEmail }),
       };
       await db.query('UPDATE tenants SET guarantor=$1 WHERE email=$2', [JSON.stringify(guarantor), email]);
       break;
@@ -199,14 +200,17 @@ async function mutate(db, action, data, email, admin, token, secure) {
         throw new RequestError('Complete your personal and guarantor details first.', 403);
       }
       if (data.consent !== 'on') throw new RequestError('Agree to the tenant consent terms.');
+      if (String(data.agreementVersion) !== String(agreement.version)) {
+        throw new RequestError('Reload the page to read the latest agreement.');
+      }
       const { rows: [tenant] } = await db.query('SELECT profile FROM tenants WHERE email=$1', [email]);
       const profile = JSON.parse(tenant.profile);
-      profile.agreement = { version: 1, acceptedAt: new Date().toISOString() };
+      profile.agreement = { ...agreement, acceptedAt: new Date().toISOString() };
       await db.query('UPDATE tenants SET profile=$1 WHERE email=$2', [JSON.stringify(profile), email]);
       break;
     }
     case 'activate': {
-      if (!current.guarantor || !current.agreement || current.receipt) {
+      if (!current.guarantor || current.agreement?.version !== agreement.version || current.receipt) {
         throw new RequestError('This action is unavailable.', 403);
       }
       const amountText = field(data, 'amount', 20);
