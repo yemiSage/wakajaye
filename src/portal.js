@@ -65,7 +65,7 @@ function render(){
      const text = esc(paragraph).replace(/\n/g, '<br>');
      if (index === 0 || /^\d+\. [A-Z]/.test(paragraph)) return '<h2>'+text+'</h2>';
      if (/^Bank:/.test(paragraph) || /^Total Annual Payment:/.test(paragraph)) return '<p class="agreement-payment"><strong>'+text+'</strong></p>';
-     if (/^(5\.4\.|7\.[1-7]\.)/.test(paragraph)) return '<p class="agreement-warning">'+text+'</p>';
+     if (/^5\.4\./.test(paragraph)) return '<p class="agreement-warning">'+text+'</p>';
      return '<p>'+text+'</p>';
    }).join('');
    const agreement = '<a class="agreement-download" href="'+agreementUrl+'?format=pdf&date='+agreementDate+'" download>'+icon('Download')+'Download agreement (PDF)</a>'+

@@ -156,7 +156,7 @@ button[aria-busy="true"]:disabled { cursor: progress; }
 
 .auth-card[data-screen="guarantor"] > h1 { padding-top: 12px; }
 
-.auth-card[data-screen="consent"] { width: min(100%, 466px); }
+.auth-card[data-screen="consent"] { width: min(100%, 506px); }
 .auth-card[data-screen="consent"] .terms {
   width: 100%;
   height: 400px;
@@ -168,7 +168,7 @@ button[aria-busy="true"]:disabled { cursor: progress; }
 .check input { flex: none; }
 
 .agreement-download { display: inline-flex; align-items: center; gap: 8px; }
-.terms h2, .agreement-payment { color: #164b9b; }
+.agreement-payment { color: #164b9b; }
 .terms .agreement-warning { color: #a52626; }
 .select-trigger > span, .select-option > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .select-trigger svg, .select-option svg { width: 16px; height: 16px; }
