@@ -6,10 +6,10 @@
 body{isolation:isolate;background:#342821}
 body::before,body::after{content:"";position:fixed;pointer-events:none}
 body::before{z-index:-2;top:50%;left:50%;width:100dvh;height:100vw;transform:translate(-50%,-50%) rotate(-90deg);background:url(/hostel.jpg) center/cover no-repeat}
-body::after{z-index:-1;inset:0;background:linear-gradient(145deg,rgba(18,13,11,.85),rgba(23,16,13,.72))}
+body::after{z-index:-1;inset:0;background:linear-gradient(145deg,rgba(18,13,11,.79),rgba(23,16,13,.65))}
 @media(max-width:767px){.auth-card{border-radius:28px;border:1px solid #fff9}}
 
-.auth-card .logo{width:104px}
+.auth-card .logo{width:94px}
 .btn.primary:disabled{background:#e9e9e6;border-color:#e9e9e6;color:#5f5f5c;opacity:1}
 
 /* The form grid contributes 14px of this 40px gap. */
