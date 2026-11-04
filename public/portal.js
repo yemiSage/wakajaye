@@ -3,7 +3,8 @@ const logo='<img class="logo" src="wordmark.svg" alt="Wakajaye">';
 const icons={Home:'M3 10l9-7 9 7v10H3z M9 20v-7h6v7',Receipts:'M6 3h12v18l-3-2-3 2-3-2-3 2z M9 8h6m-6 4h6',Review:'M4 6h16v14H4z M8 6V3h8v3'};
 const icon=n=>'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="'+icons[n]+'"/></svg>';
 const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-const input=(label,name,type='text',attrs='')=>'<label>'+label+'<input name="'+name+'" type="'+type+'" '+attrs+' required></label>';
+const input = (label, name, type = 'text', attrs = '', required = true) =>
+  '<label>'+label+'<input name="'+name+'" type="'+type+'" '+attrs+(required?' required':'')+'></label>';
 const btn=(label,action,cls='')=>'<button type="button" class="btn '+cls+'" data-go="'+action+'">'+label+'</button>';
 const submit=(label,attrs='')=>'<button class="btn primary" '+attrs+'>'+label+'</button>';
 const form=(name,contents)=>'<form class="stack" data-form="'+name+'">'+contents+'<p class="error" role="alert" hidden></p></form>';
@@ -37,7 +38,7 @@ function render(){
      form('guarantor', input('Full name', 'name', 'text', 'maxlength="120"') +
        input('Relationship to you', 'relationship', 'text', 'maxlength="80"') +
        input('Phone number', 'phone', 'tel', 'maxlength="30"') +
-       input('Email address', 'email', 'email', 'maxlength="254"') + submit('Continue')), 'Step 2 of 3');
+       input('Email address (optional)', 'email', 'email', 'maxlength="254"', false) + submit('Continue')), 'Step 2 of 3');
  }
  if (page === 'consent') {
    const agreement = `<div class="terms" tabindex="0" aria-label="Tenant consent and agreement">

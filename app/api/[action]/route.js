@@ -184,11 +184,12 @@ async function mutate(db, action, data, email, admin, token, secure) {
     }
     case 'guarantor': {
       if (!current.first || !current.gender || !current.dob) throw new RequestError('Complete your profile first.', 403);
+      const email = typeof data.email === 'string' ? data.email.trim() : data.email;
       const guarantor = {
         name: field(data, 'name'),
         relationship: field(data, 'relationship'),
         phone: field(data, 'phone', 30),
-        email: emailField(data),
+        email: email == null || email === '' ? null : emailField({ email }),
       };
       await db.query('UPDATE tenants SET guarantor=$1 WHERE email=$2', [JSON.stringify(guarantor), email]);
       break;
