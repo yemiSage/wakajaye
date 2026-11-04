@@ -20,3 +20,5 @@ Trap by Aayush Mayank is bundled locally. Source: https://befonts.com/trap-sans-
 ## Vercel
 
 Import this repository on Vercel with the Next.js framework preset and the repository root as the root directory. Add the four server environment variables above and deploy. Apply the Supabase schema before testing sign-in. Proof uploads are limited to 3 MB.
+
+The browser UI source is in `src/portal.js`. `npm run build:client` bundles only the Iconsax icons used by the app into `public/portal.js`. The normal dev and production build scripts run this step automatically. The agreement PDF and on-screen text share the template in `content/residential-tenancy-agreement.txt`.

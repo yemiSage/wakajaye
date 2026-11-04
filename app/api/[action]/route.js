@@ -1,8 +1,9 @@
 import { createHash, randomBytes, randomInt, timingSafeEqual } from 'node:crypto';
 import { NextResponse } from 'next/server';
 import pg from 'pg';
+import { adminData, tenantDetails } from '../../../lib/admin.mjs';
 import supabaseCA from './supabase-ca';
-import agreement from './agreement.json';
+import { agreementForDate, agreementVersion } from '../../../lib/agreement.mjs';
 
 export const runtime = 'nodejs';
 
@@ -74,9 +75,11 @@ async function sendMail(email, subject, textContent, receipt) {
 
 async function loadUser(db, email, admin) {
   if (!email) return null;
-  const { rows: [tenant] } = await db.query('SELECT profile, guarantor, rent FROM tenants WHERE email=$1', [email]);
+  const { rows: [tenant] } = await db.query(
+    'SELECT t.profile,t.guarantor,t.rent,r.name AS receipt_name,r.status AS receipt_status FROM tenants t LEFT JOIN receipts r USING(email) WHERE t.email=$1', [email],
+  );
   if (!tenant) return null;
-  const { rows: [receipt] } = await db.query('SELECT name, status FROM receipts WHERE email=$1', [email]);
+  const receipt = tenant.receipt_status ? { name: tenant.receipt_name, status: tenant.receipt_status } : null;
   return {
     ...JSON.parse(tenant.profile || '{}'),
     email,
@@ -90,6 +93,12 @@ async function loadUser(db, email, admin) {
 async function read(db, request, action, email, admin) {
   if (action === 'session') return json({ user: await loadUser(db, email, admin) });
   if (!email || email !== admin) throw new RequestError('Admin access required.', 403);
+  if (action === 'admin') return json(await adminData(db, request.nextUrl.searchParams));
+  if (action === 'tenant') {
+    const tenant = await tenantDetails(db, request.nextUrl.searchParams.get('email') || '');
+    if (!tenant) throw new RequestError('Tenant not found.', 404);
+    return json({ tenant });
+  }
   if (action === 'queue') {
     const { rows } = await db.query("SELECT r.id, r.email, t.rent FROM receipts r JOIN tenants t USING(email) WHERE r.status='pending'");
     return json({ queue: rows.map(({ id, email, rent }) => {
@@ -105,7 +114,7 @@ async function read(db, request, action, email, admin) {
     const name = encodeURIComponent(file.name).replace(/'/g, '%27');
     return new Response(file.bytes, { headers: {
       'Content-Type': file.mime,
-      'Content-Disposition': "attachment; filename*=UTF-8''" + name,
+      'Content-Disposition': (request.nextUrl.searchParams.get('preview') === '1' ? 'inline' : 'attachment') + "; filename*=UTF-8''" + name,
       'X-Content-Type-Options': 'nosniff',
       'Cache-Control': 'no-store',
     } });
@@ -200,17 +209,20 @@ async function mutate(db, action, data, email, admin, token, secure) {
         throw new RequestError('Complete your personal and guarantor details first.', 403);
       }
       if (data.consent !== 'on') throw new RequestError('Agree to the tenant consent terms.');
-      if (String(data.agreementVersion) !== String(agreement.version)) {
+      if (String(data.agreementVersion) !== String(agreementVersion)) {
         throw new RequestError('Reload the page to read the latest agreement.');
       }
       const { rows: [tenant] } = await db.query('SELECT profile FROM tenants WHERE email=$1', [email]);
       const profile = JSON.parse(tenant.profile);
-      profile.agreement = { ...agreement, acceptedAt: new Date().toISOString() };
+      const now = new Date();
+      const agreement = agreementForDate(now);
+      if (data.agreementDate !== agreement.date) throw new RequestError('The date has changed. Reload to read the current agreement.');
+      profile.agreement = { version: agreement.version, date: agreement.date, sha256: agreement.sha256, acceptedAt: now.toISOString() };
       await db.query('UPDATE tenants SET profile=$1 WHERE email=$2', [JSON.stringify(profile), email]);
       break;
     }
     case 'activate': {
-      if (!current.guarantor || current.agreement?.version !== agreement.version || current.receipt) {
+      if (!current.guarantor || current.agreement?.version !== agreementVersion || current.receipt) {
         throw new RequestError('This action is unavailable.', 403);
       }
       const amountText = field(data, 'amount', 20);
@@ -248,6 +260,8 @@ async function mutate(db, action, data, email, admin, token, secure) {
         'Amount received: NGN ' + amount,
       ].join('\n');
       await sendMail(receipt.email, 'Your official Wakajaye rent receipt', 'Your rent payment has been verified. Your official receipt is attached.', text);
+      const rent = { ...tenant.rent, approvedAt: new Date().toISOString(), approvedBy: email };
+      await db.query('UPDATE tenants SET rent=$1 WHERE email=$2', [JSON.stringify(rent), receipt.email]);
       await db.query("UPDATE receipts SET status='verified' WHERE id=$1", [receipt.id]);
       break;
     }
@@ -265,6 +279,9 @@ async function handle(request, { params }) {
     const token = rawToken ? digest(rawToken) : '';
     const write = request.method === 'POST';
     if (!write && action === 'session' && !token) return json({ user: null });
+    if (!write && ['admin', 'tenant', 'queue', 'file'].includes(action) && !token) {
+      throw new RequestError('Admin access required.', 403);
+    }
 
     let data;
     const protocol = request.headers.get('x-forwarded-proto') ?? request.nextUrl.protocol.slice(0, -1);
