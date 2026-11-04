@@ -1,6 +1,7 @@
 import { createHash, randomBytes, randomInt, timingSafeEqual } from 'node:crypto';
 import { NextResponse } from 'next/server';
 import pg from 'pg';
+import supabaseCA from './supabase-ca';
 
 export const runtime = 'nodejs';
 
@@ -277,7 +278,7 @@ async function handle(request, { params }) {
 
     const connectionString = process.env.SUPABASE_DB_URL;
     if (!connectionString) throw new RequestError('The tenant database is unavailable.', 503);
-    pool ??= new pg.Pool({ connectionString, ssl: true, connectionTimeoutMillis: 5000, max: 4 });
+    pool ??= new pg.Pool({ connectionString, ssl: { ca: supabaseCA, rejectUnauthorized: true }, connectionTimeoutMillis: 5000, max: 4 });
     db = await pool.connect();
     await db.query('BEGIN');
     await db.query('SET LOCAL search_path TO wakajaye, pg_catalog');
