@@ -38,3 +38,22 @@ form.stack > .btn.primary{margin-top:26px}
 @media (max-width: 767px), (hover: none) and (pointer: coarse) {
   input, select, textarea { font-size: 16px; }
 }
+
+.loading-dot {
+  display: inline-block;
+  flex: none;
+  width: 6px;
+  height: 6px;
+  margin-left: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  animation: loading-pulse 900ms ease-in-out infinite;
+}
+button[aria-busy="true"]:disabled { cursor: progress; }
+@keyframes loading-pulse {
+  0%, 100% { opacity: .3; }
+  50% { opacity: 1; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .loading-dot { animation: none; }
+}

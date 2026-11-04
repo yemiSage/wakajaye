@@ -131,18 +131,44 @@ async function go(p){
  if(p.startsWith('approve:')){await api('approve',{id:Number(p.split(':')[1])});queue=(await api('queue')).queue;toast('Receipt verified and issued.');return render()}
  page=p;render();
 }
-app.addEventListener('click',async e=>{const b=e.target.closest('[data-go]');if(!b)return;b.disabled=true;try{await go(b.dataset.go)}catch(e){toast(e.message)}finally{b.disabled=false}});
+function setButtonLoading(button, loading) {
+  if (loading) {
+    button.disabled = true;
+    button.setAttribute('aria-busy', 'true');
+    const dot = document.createElement('span');
+    dot.className = 'loading-dot';
+    dot.setAttribute('aria-hidden', 'true');
+    button.append(dot);
+    return;
+  }
+  button.removeAttribute('aria-busy');
+  button.querySelector('.loading-dot')?.remove();
+}
+
+app.addEventListener('click', async event => {
+  const button = event.target.closest('[data-go]');
+  if (!button || button.disabled) return;
+  setButtonLoading(button, true);
+  try {
+    await go(button.dataset.go);
+  } catch (error) {
+    toast(error.message);
+  } finally {
+    setButtonLoading(button, false);
+    button.disabled = false;
+  }
+});
 app.addEventListener('submit',async e=>{
- const f=e.target;if(!f.dataset.form)return;e.preventDefault();const data=Object.fromEntries(new FormData(f));const error=f.querySelector('.error'),b=f.querySelector('button:not([type])');error.hidden=true;f.dataset.busy='true';b.disabled=true;
+ const f=e.target;if(!f.dataset.form)return;if(f.dataset.busy==='true'){e.preventDefault();return;}e.preventDefault();const data=Object.fromEntries(new FormData(f));const error=f.querySelector('.error'),b=f.querySelector('button:not([type])');error.hidden=true;f.dataset.busy='true';setButtonLoading(b,true);
  try{
   const action=f.dataset.form;
-  if(action==='code'){email=data.email.trim().toLowerCase();await api('code',{email,mode});return go('verify')}
-  if(action==='verify'){user=(await api('verify',{email,code:data.code})).user;return go(tenantPage())}
+  if(action==='code'){email=data.email.trim().toLowerCase();await api('code',{email,mode});return await go('verify')}
+  if(action==='verify'){user=(await api('verify',{email,code:data.code})).user;return await go(tenantPage())}
   if(action==='activate'){if(data.file.size>3*1024*1024)throw Error('Choose a file no larger than 3 MB.');const file=data.file;data.file=await new Promise((resolve,reject)=>{const r=new FileReader();r.onerror=reject;r.onload=()=>resolve(r.result.split(',')[1]);r.readAsDataURL(file)});data.name=file.name;}
   user=(await api(action,data)).user;
   if(action==='activate')toast('Payment submitted for landlord approval.');
-  return go(tenantPage());
- }catch(e){error.textContent=e.message||'Could not complete the request.';error.hidden=false;}finally{delete f.dataset.busy;f.dispatchEvent(new Event('change'));}
+  return await go(tenantPage());
+ }catch(e){error.textContent=e.message||'Could not complete the request.';error.hidden=false;}finally{setButtonLoading(b,false);delete f.dataset.busy;f.dispatchEvent(new Event('change'));}
 });
 (async () => {
  try {
