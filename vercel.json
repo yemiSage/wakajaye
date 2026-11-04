@@ -1,0 +1,6 @@
+{
+  "outputDirectory": "dist",
+  "rewrites": [
+    { "source": "/api/:route", "destination": "/api/index?_route=:route" }
+  ]
+}
