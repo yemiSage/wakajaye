@@ -319,6 +319,39 @@ test('review reasons survive reads and resubmission replaces selected proofs wit
   assert.deepEqual(Buffer.from(await response.arrayBuffer()),keep);
 });
 
+test('an existing tenant sees a correction on their open dashboard without losing an open edit', async () => {
+  const app = {dataset:{portal:'tenant'},innerHTML:'',querySelectorAll:()=>[],querySelector:()=>null,addEventListener(){}};
+  const pending = {
+    email:'tenant@example.com', first:'Existing tenant',
+    receipt:{status:'pending'}, rent:{amount:254000},
+  };
+  const corrected = {
+    ...pending, receipt:{status:'correction'},
+    rent:{...pending.rent,review:{status:'correction',reason:'Please replace the proof.'}},
+  };
+  const context = vm.createContext({
+    document:{visibilityState:'visible',querySelector:selector=>selector==='#app'?app:{},addEventListener(){}},
+    __WAKAJAYE_ICONS__:{},Intl,Date,setTimeout,clearTimeout,pending,
+  });
+  const source = readFileSync('src/portal.js','utf8').replace(/^import .*;\n/gm,'');
+  vm.runInContext(source.slice(0,source.indexOf('email = app.querySelector')),context);
+  vm.runInContext("user=pending;page='home';render();",context);
+  assert.match(app.innerHTML,/pending landlord approval/);
+  let finishRefresh;
+  context.api = () => new Promise(resolve => { finishRefresh = resolve; });
+  const refresh = context.refreshTenantPayment();
+  vm.runInContext("page='activate';",context);
+  finishRefresh({user:corrected});
+  await refresh;
+  assert.match(app.innerHTML,/pending landlord approval/);
+  vm.runInContext("page='home';",context);
+  context.api = async () => ({user:corrected});
+  await context.refreshTenantPayment();
+  assert.match(app.innerHTML,/Correction requested/);
+  assert.match(app.innerHTML,/Please replace the proof/);
+  assert.match(app.innerHTML,/Edit and resubmit/);
+});
+
 test('amounts group thousands and untrusted tenant data cannot escape HTML attributes',()=>{
   const app={dataset:{portal:'tenant'},querySelectorAll:()=>[],querySelector:()=>null,addEventListener(){}};
   const context=vm.createContext({document:{querySelector:selector=>selector==='#app'?app:{},addEventListener(){}},__WAKAJAYE_ICONS__:{},Intl,Date,setTimeout,clearTimeout});

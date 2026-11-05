@@ -18,6 +18,7 @@ let adminPage = 1;
 let adminSearch = '';
 let adminFilter = '';
 let paymentProofs = [];
+let tenantRefreshInFlight = false;
 let agreementText = '';
 const agreementVersion = 3;
 let agreementDate = '';
@@ -115,11 +116,12 @@ function render(){
      inactive: 'Submit your payment details to activate your rent.',
    }[status];
    const reviewReason = rent?.review?.reason ? '<p class="review-reason"><strong>Reason</strong> '+esc(rent.review.reason)+'</p>' : '';
+   const editLabel = status === 'correction' || status === 'rejected' ? 'Edit and resubmit' : 'Edit payment';
    const rentCard = '<article class="card rent-card"><div class="rent-card-header"><span class="mark">'+icon('Home')+
      '</span><div class="rent-card-summary"><h2>Your rent</h2><p>'+message+'</p></div>'+statusTag(status)+'</div>'+reviewReason+
      (receipt ? '<dl class="details">'+(rent.charges ? paymentLines(rent).map(([label,amount]) =>
        '<div><dt>'+label+'</dt><dd>'+money(amount)+'</dd></div>').join('') : '')+
-       '<div><dt>Total paid</dt><dd>'+money(rent.amount)+'</dd></div></dl>'+(active?'':'<div class="action-row">'+btn('Edit payment','activate','primary')+btn('Refresh status','refresh-rent')+'</div>')
+       '<div><dt>Total paid</dt><dd>'+money(rent.amount)+'</dd></div></dl>'+(active?'':'<div class="action-row">'+btn(editLabel,'activate','primary')+btn('Refresh status','refresh-rent')+'</div>')
        : btn('Activate my rent', 'activate', 'primary'))+'</article>';
    const issuedDate = rent?.approvedAt && new Date(rent.approvedAt).toLocaleDateString('en-GB', {
      day: 'numeric', month: 'short', year: 'numeric', timeZone: 'Africa/Lagos',
@@ -129,7 +131,7 @@ function render(){
      : '<tr><td colspan="3">'+(receipt ? message : 'No receipts issued yet.')+'</td></tr>';
    const receiptTable = '<div class="table-scroll"><table class="tenant-table receipt-table" aria-label="Issued rent receipts">'+
      '<thead><tr><th scope="col">Date</th><th scope="col">Receipt number</th><th scope="col">Action</th></tr></thead><tbody>'+receiptRow+'</tbody></table></div>'+
-     (receipt && !active ? reviewReason+'<div class="action-row">'+btn('Edit payment','activate')+'</div>' : '');
+     (receipt && !active ? reviewReason+'<div class="action-row">'+btn(editLabel,'activate','primary')+'</div>' : '');
    app.innerHTML = page === 'receipts'
      ? shell('Receipts', content('Rent receipts', 'View and download your issued rent receipts.', receiptTable, true))
      : shell('Home', content('Welcome, '+esc(user.first), 'Manage your Wakajaye rent and receipts in one place.', rentCard));
@@ -640,6 +642,28 @@ function tenantPage() {
  if (user.agreement?.version !== agreementVersion) return 'consent';
  return 'home';
 }
+
+async function refreshTenantPayment() {
+  if (isAdminPortal || tenantRefreshInFlight || document.visibilityState !== 'visible' ||
+      user?.receipt?.status !== 'pending' || !['home','receipts'].includes(page)) return;
+  const previousUser = user;
+  const previousPage = page;
+  tenantRefreshInFlight = true;
+  try {
+    const { user: latest } = await api('session');
+    if (user !== previousUser || page !== previousPage) return;
+    if (JSON.stringify(latest?.receipt) === JSON.stringify(previousUser.receipt) &&
+        JSON.stringify(latest?.rent) === JSON.stringify(previousUser.rent)) return;
+    user = latest;
+    if (!user) page = 'login';
+    render();
+  } catch {
+    // A temporary connection failure should leave the open dashboard usable.
+  } finally {
+    tenantRefreshInFlight = false;
+  }
+}
+
 async function go(p){
  if (p === 'close-sheet') {
    if (app.querySelector('[data-busy="true"]')) return;
@@ -651,10 +675,11 @@ async function go(p){
    if (isAdminPortal && destination !== 'admin') p = destination;
    if (!isAdminPortal && destination !== 'home') p = destination;
  }
- if (p === 'refresh-rent' || p === 'receipts') {
+ if (p === 'refresh-rent' || p === 'receipts' || (p === 'activate' && user?.receipt)) {
    ({ user } = await api('session'+(isAdminPortal?'?portal=admin':'')));
    const destination = tenantPage();
-   if (p === 'refresh-rent' || destination !== 'home') p = destination;
+   if (p === 'refresh-rent' || destination !== 'home' ||
+       (p === 'activate' && user?.receipt?.status === 'verified')) p = destination;
  }
  if(p==='toggle' && !isAdminPortal){mode=mode==='create'?'signin':'create';return render()}
  if(p==='logout'){await api('logout',{portal:isAdminPortal?'admin':'tenant'});user=null;email='';adminRecords=null;p='login'}
@@ -802,6 +827,12 @@ app.addEventListener('submit',async e=>{
 });
 email = app.querySelector('[name="email"]')?.value || '';
 render();
+if (!isAdminPortal) {
+  document.addEventListener('visibilitychange', refreshTenantPayment);
+  window.addEventListener('focus', refreshTenantPayment);
+  window.addEventListener('pageshow', refreshTenantPayment);
+  window.setInterval(refreshTenantPayment, 30_000);
+}
 (async () => {
  try {
    ({user} = await api('session'+(isAdminPortal?'?portal=admin':'')));
