@@ -340,7 +340,11 @@ button[aria-busy="true"]:disabled { cursor: progress; }
 .payment-fields label small { display: inline; font-weight: 400; color: #5f5f5c; }
 .payment-total { display: flex; justify-content: space-between; gap: 12px; font-weight: 600; }
 .action-row { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
-.tenant-table .action-row { flex-wrap: nowrap; }
+.tenant-table .action-row {
+  width: max-content;
+  margin-inline-start: auto;
+  flex-wrap: nowrap;
+}
 .icon-btn { width: 34px; padding: 0; flex: none; }
 .tag.rejected { color: #9d2929; background: #fdecec; }
 .review-reason { white-space: pre-wrap; overflow-wrap: anywhere; background: #f6f6f4; border-radius: 10px; padding: 12px; margin: 14px 0; }
