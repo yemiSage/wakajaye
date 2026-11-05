@@ -300,6 +300,7 @@ button[aria-busy="true"]:disabled { cursor: progress; }
     padding: max(24px, env(safe-area-inset-top)) max(20px, env(safe-area-inset-right)) max(24px, env(safe-area-inset-bottom)) max(20px, env(safe-area-inset-left));
   }
   .tenant-shell > .main { min-height: 0; padding-bottom: calc(104px + env(safe-area-inset-bottom)); }
+  .tenant-shell > .main > .bar { display: none; }
   .tenant-shell .sidebar .nav {
     position: absolute;
     z-index: 40;
@@ -321,9 +322,9 @@ button[aria-busy="true"]:disabled { cursor: progress; }
     flex: 1;
     min-width: 0;
     min-height: 54px;
-    flex-direction: column;
+    flex-direction: row;
     justify-content: center;
-    gap: 4px;
+    gap: 8px;
     padding: 6px 14px;
     border: 0;
     border-radius: 18px;
