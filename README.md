@@ -25,7 +25,7 @@ Import this repository on Vercel with the Next.js framework preset and the repos
 
 Rent activation has one House rent input. Total paid mirrors that input exactly, without adding charges. Only receipts show the fixed breakdown: house rent ₦200,000, electricity ₦42,000, and sanitation ₦12,000. The saved total remains exactly what the tenant entered. Existing issued receipts retain their original amounts.
 
-To enable signed PDF receipts, set `RECEIPT_SIGNATURE_BASE64` to the base64 of the cropped signature PNG as a server-only Production secret and redeploy. The signed PDF is attached to new approval emails and available to the approved tenant from Receipts. Keep the original screenshot and cropped signature out of the repository.
+Receipts always use the PDF template for approval email attachments and dashboard downloads. To include the caretaker's signature, set `RECEIPT_SIGNATURE_BASE64` to the base64 of the cropped signature PNG as a server-only Production secret and redeploy. When the signature is absent, the same PDF is generated with its signature area blank. Keep the original screenshot and cropped signature out of the repository.
 
 The browser UI source is in `src/portal.js`. `npm run build:client` bundles only the Iconsax icons used by the app into `public/portal.js` and generates its versioned URL in `lib/portal-asset.mjs`. The normal dev and production build scripts run this step automatically so each updated page loads the matching browser script. The agreement PDF and on-screen text share the template in `content/residential-tenancy-agreement.txt`.
 

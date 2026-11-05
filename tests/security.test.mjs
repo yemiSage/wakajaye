@@ -17,7 +17,7 @@ const record = mode => ({ mode, digest: security.otpDigest(address, mode, salt, 
 function routeContext(overrides = {}) {
   const source = readFileSync('app/api/[action]/route.js','utf8');
   const context = vm.createContext({
-    ...security, ...charges, ...proofs, randomBytes, randomInt, Buffer, Response, AbortSignal, console,
+    ...security, ...charges, ...proofs, receiptPdf, randomBytes, randomInt, Buffer, Response, AbortSignal, console,
     process: { env: {} },
     NextResponse: { json(data, options) {
       const response = Response.json(data, options);
@@ -127,7 +127,7 @@ test('request guards reject CSRF, malformed bodies and tenant-cookie admin acces
   assert.deepEqual(await (await call(context,'session?portal=admin',{cookies:{wj:'a'.repeat(43)}})).json(),{user:null});
 });
 
-test('approval emails the same receipt the tenant can download and keeps it pending if mail fails', async () => {
+for (const withSignature of [false,true]) test('approval emails the template PDF with '+(withSignature?'a configured':'no')+' signature and download matches', async () => {
   const tenant = 'tenant@example.com';
   const profile = JSON.stringify({first:'Sample',last:'Tenant'});
   let rent = JSON.stringify({amount:250000});
@@ -136,16 +136,12 @@ test('approval emails the same receipt the tenant can download and keeps it pend
   let mailStatus = 502;
   const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jHuoAAAAASUVORK5CYII=', 'base64');
   const context = routeContext({
-    process: {env:{BREVO_API_KEY:'fake-key',BREVO_FROM_EMAIL:'sender@example.com'}},
+    process: {env:{BREVO_API_KEY:'fake-key',BREVO_FROM_EMAIL:'sender@example.com',
+      ...(withSignature ? {RECEIPT_SIGNATURE_BASE64:png.toString('base64')} : {})}},
     fetch: async (_url, options) => {
       mail = JSON.parse(options.body);
       return {status:mailStatus};
     },
-  });
-  context.officialReceipt = async (id, user, payment) => ({
-    name: `wakajaye-receipt-WJ-00000${id}.pdf`,
-    type: 'application/pdf',
-    bytes: await receiptPdf({number:`WJ-00000${id}`,name:payment.issuedTo,email:user.email,rent:payment}, png),
   });
   const db = {async query(sql, params) {
     if (sql.startsWith('SELECT pg_advisory_xact_lock')) return {};

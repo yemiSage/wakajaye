@@ -5,8 +5,9 @@ import { ADMIN_EMAIL, adminActions, readActions, writeActions, usesAdminSession,
 import { adminData, tenantDetails } from '../../../lib/admin.mjs';
 import supabaseCA from './supabase-ca';
 import { agreementForDate, agreementVersion } from '../../../lib/agreement.mjs';
-import { amountInKobo, fixedPaymentCharges, maxPaymentKobo, paymentLines } from '../../../lib/payment-charges.mjs';
+import { amountInKobo, fixedPaymentCharges, maxPaymentKobo } from '../../../lib/payment-charges.mjs';
 import { maxImageProofBytes, maxProofBytes, maxProofFiles, paymentStatus, proofAt, proofFiles } from '../../../lib/payment-proof.mjs';
+import { receiptPdf } from '../../../lib/receipt-pdf.mjs';
 
 export const runtime = 'nodejs';
 
@@ -90,25 +91,10 @@ async function officialReceipt(id, tenant, rent) {
   const number = receiptNumber(id);
   const name = rent.issuedTo ?? tenantName(tenant);
   const encodedSignature = process.env.RECEIPT_SIGNATURE_BASE64;
-  if (!encodedSignature) {
-    // Preserve the existing text receipt until the private signing asset is configured.
-    const amount = new Intl.NumberFormat('en-NG', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-    const text = [
-      'WAKAJAYE HOSTEL',
-      'Official rent receipt ' + number,
-      '',
-      'Tenant: ' + name,
-      ...(rent.paid ? ['Payment date: ' + rent.paid] : []),
-      ...(rent.charges ? paymentLines(rent).map(([label, value]) => label + ': NGN ' + amount.format(value)) : []),
-      'Amount received: NGN ' + amount.format(rent.amount),
-    ].join('\n');
-    return { name: 'wakajaye-receipt-' + number + '.txt', bytes: Buffer.from(text), type: 'text/plain; charset=utf-8' };
-  }
-  const signature = Buffer.from(encodedSignature, 'base64');
-  if (signature.subarray(0, 8).toString('hex') !== '89504e470d0a1a0a') {
+  const signature = encodedSignature ? Buffer.from(encodedSignature, 'base64') : undefined;
+  if (signature && signature.subarray(0, 8).toString('hex') !== '89504e470d0a1a0a') {
     throw new RequestError('The receipt signature has not been configured.', 503);
   }
-  const { receiptPdf } = await import('../../../lib/receipt-pdf.mjs');
   const bytes = await receiptPdf({ number, name, email: tenant.email, rent }, signature);
   return { name: 'wakajaye-receipt-' + number + '.pdf', bytes, type: 'application/pdf' };
 }
@@ -394,9 +380,8 @@ async function mutate(db, action, data, email, admin, token, secure, adminScope 
         issuedTo: tenantName(tenant),
       };
       const attachment = await officialReceipt(receipt.id, tenant, rent);
-      const receiptDescription = attachment.type === 'application/pdf' ? 'signed PDF receipt' : 'official receipt';
       await sendMail(receipt.email, 'Your official Wakajaye rent receipt',
-        'Your rent payment has been verified. Your ' + receiptDescription +
+        'Your rent payment has been verified. Your PDF receipt' +
         ' is attached and available under Receipts in your Wakajaye dashboard.', attachment);
       await db.query('UPDATE tenants SET rent=$1 WHERE email=$2', [JSON.stringify(rent), receipt.email]);
       await db.query("UPDATE receipts SET status='verified' WHERE id=$1", [receipt.id]);
