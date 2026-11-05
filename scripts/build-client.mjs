@@ -4,7 +4,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { Home2, Receipt21, ClipboardTick, ArrowDown2, ArrowLeft2, ArrowRight2, CloseCircle, TickCircle, DocumentUpload, DocumentDownload, People, Element3, LogoutCurve, SearchNormal1, Eye, Sms, Trash } from 'iconsax-react';
 
 const components = {
-  Home: Home2, Receipts: Receipt21, Review: ClipboardTick, ChevronDown: ArrowDown2,
+  Home: Home2, Receipts: Receipt21, Agreement: ClipboardTick, Review: ClipboardTick, ChevronDown: ArrowDown2,
   Previous: ArrowLeft2, Next: ArrowRight2, Close: CloseCircle, Check: TickCircle,
   Upload: DocumentUpload, Download: DocumentDownload, Tenants: People, Admin: Element3,
   Logout: LogoutCurve, Search: SearchNormal1, Eye, Email: Sms, Trash,

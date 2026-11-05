@@ -100,6 +100,26 @@ test('agreement checkbox stays locked until the end and requires explicit confir
   assert.match(app.innerHTML,/<strong>Bank: Zenith Bank/);
 });
 
+test('tenants can reopen their accepted agreement and download the dated PDF', async () => {
+  const agreement = agreementForDate(new Date('2026-11-01T12:00:00Z'));
+  const app = {dataset:{portal:'tenant'},innerHTML:'',querySelectorAll:()=>[],querySelector:()=>null,addEventListener(){}};
+  const context = vm.createContext({
+    document:{querySelector:selector=>selector==='#app'?app:{},addEventListener(){}},
+    __WAKAJAYE_ICONS__:{},Intl,Date,setTimeout,clearTimeout,agreement,
+    fetch:async url => {
+      assert.equal(url,'/api/agreement?date=2026-11-01');
+      return {ok:true,json:async()=>agreement};
+    },
+  });
+  const source = readFileSync('src/portal.js','utf8').replace(/^import .*;\n/gm,'');
+  vm.runInContext(source.slice(0,source.indexOf('email = app.querySelector')),context);
+  await vm.runInContext("user={email:'tenant@example.com',first:'Tenant',gender:'Male',dob:'1990-01-01',guarantor:true,agreement}; go('agreement');",context);
+  assert.match(app.innerHTML,/aria-current="page" data-go="agreement"/);
+  assert.match(app.innerHTML,/class="card agreement-copy"/);
+  assert.match(app.innerHTML,/format=pdf&date=2026-11-01/);
+  assert.doesNotMatch(app.innerHTML,/name="consent"/);
+});
+
 test('admin URL has its own navigation and does not require tenant onboarding', () => {
   const source=readFileSync('src/portal.js','utf8').replace(/^import .*;\n/gm,'');
   for (const portal of ['tenant','admin']) {

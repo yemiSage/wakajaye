@@ -168,7 +168,11 @@ button[aria-busy="true"]:disabled { cursor: progress; }
 
 .agreement-download { display: inline-flex; align-items: center; gap: 8px; }
 .agreement-payment { color: #164b9b; }
-.terms .agreement-warning { color: #a52626; }
+.terms .agreement-warning, .agreement-copy .agreement-warning { color: #a52626; }
+.agreement-copy { margin-top: 16px; overflow-wrap: anywhere; }
+.agreement-copy h2 { font-size: 14px; line-height: 1.5; margin: 18px 0 10px; }
+.agreement-copy h2:first-child { margin-top: 0; }
+.agreement-copy p:last-child { margin-bottom: 0; }
 .select-trigger > span, .select-option > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .select-trigger svg, .select-option svg { width: 16px; height: 16px; }
 .upload-card {
@@ -309,7 +313,7 @@ button[aria-busy="true"]:disabled { cursor: progress; }
     transform: translateX(-50%);
     display: flex;
     gap: 6px;
-    width: min(calc(100% - 32px), 320px);
+    width: min(calc(100% - 32px), 360px);
     max-height: none;
     padding: 7px;
     border: 1px solid #e9e9e6;
@@ -319,20 +323,20 @@ button[aria-busy="true"]:disabled { cursor: progress; }
     overflow: visible;
   }
   .tenant-shell .sidebar .nav .btn {
-    flex: 1;
+    flex: 1 1 auto;
     min-width: 0;
     min-height: 54px;
     flex-direction: row;
     justify-content: center;
-    gap: 8px;
-    padding: 6px 14px;
+    gap: 6px;
+    padding: 6px;
     border: 0;
     border-radius: 18px;
     color: #5f5f5c;
     font-size: 11px;
   }
   .tenant-shell .sidebar .nav .active { color: #0a0a0a; background: #f4f4f3; }
-  .tenant-shell .nav svg { display: block; width: 22px; height: 22px; }
+  .tenant-shell .nav svg { display: block; width: 18px; height: 18px; flex: none; }
   #notice { bottom: calc(104px + env(safe-area-inset-bottom)); }
 }
 

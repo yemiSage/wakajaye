@@ -23,13 +23,27 @@ let agreementText = '';
 const agreementVersion = 3;
 let agreementDate = '';
 const agreementUrl = '/api/agreement';
-async function loadAgreement() {
-
-  const response = await fetch(agreementUrl);
+async function loadAgreement(date, expectedHash) {
+  const response = await fetch(date ? agreementUrl+'?date='+encodeURIComponent(date) : agreementUrl);
   if (!response.ok) throw Error('Could not load the agreement. Please try again.');
   const document = await response.json();
+  if (expectedHash && document.sha256 !== expectedHash) throw Error('The accepted agreement could not be verified.');
   agreementText = document.text;
   agreementDate = document.date;
+}
+
+function agreementParagraphs() {
+  return agreementText.trim().split(/\n\s*\n/).map((paragraph, index) => {
+    const text = esc(paragraph).replace(/\n/g, '<br>');
+    if (index === 0 || /^\d+\. [A-Z]/.test(paragraph)) return '<h2>'+text+'</h2>';
+    if (/^Bank:/.test(paragraph) || /^Total Annual Payment:/.test(paragraph)) return '<p class="agreement-payment"><strong>'+text+'</strong></p>';
+    if (/^5\.4\./.test(paragraph)) return '<p class="agreement-warning">'+text+'</p>';
+    return '<p>'+text+'</p>';
+  }).join('');
+}
+
+function agreementDownload() {
+  return '<a class="agreement-download" href="'+agreementUrl+'?format=pdf&date='+encodeURIComponent(agreementDate)+'" download>'+icon('Download')+'Download agreement (PDF)</a>';
 }
 const dateParts=Object.fromEntries(new Intl.DateTimeFormat('en-CA',{timeZone:'Africa/Lagos',year:'numeric',month:'2-digit',day:'2-digit'}).formatToParts(new Date()).map(p=>[p.type,p.value]));
 const today=[dateParts.year,dateParts.month,dateParts.day].join('-');
@@ -39,7 +53,7 @@ async function api(path,data){const r=await fetch('/api/'+path,data===undefined?
 function auth(title,desc,body,step=''){return '<main class="auth"><section class="auth-card" data-screen="'+esc(page)+'" aria-labelledby="auth-title"><header>'+logo+'</header>'+(step?'<p class="eyebrow">'+step+'</p>':'')+'<h1 id="auth-title">'+title+'</h1><p class="intro">'+desc+'</p>'+body+'</section></main>'}
 function shell(title,body) {
  const navigationPage = page === 'activate' ? 'home' : page;
- const items = isAdminPortal ? [['Admin','admin'],['Tenants','tenants'],['Review','review']] : [['Home','home'],['Receipts','receipts']];
+ const items = isAdminPortal ? [['Admin','admin'],['Tenants','tenants'],['Review','review']] : [['Home','home'],['Receipts','receipts'],['Agreement','agreement']];
  const navigation = items.map(([label,destination]) =>
    btn(icon(label)+'<span>'+label+'</span>',destination,'quiet '+(navigationPage===destination?'active':''))
      .replace('data-go=',(navigationPage===destination?'aria-current="page" ':'')+'data-go=')).join('');
@@ -91,21 +105,18 @@ function render(){
        input('Email address (optional)', 'email', 'email', 'maxlength="254"', false) + submit('Continue')), 'Step 2 of 3');
  }
  if (page === 'consent') {
-   const paragraphs = agreementText.trim().split(/\n\s*\n/).map((paragraph, index) => {
-     const text = esc(paragraph).replace(/\n/g, '<br>');
-     if (index === 0 || /^\d+\. [A-Z]/.test(paragraph)) return '<h2>'+text+'</h2>';
-     if (/^Bank:/.test(paragraph) || /^Total Annual Payment:/.test(paragraph)) return '<p class="agreement-payment"><strong>'+text+'</strong></p>';
-     if (/^5\.4\./.test(paragraph)) return '<p class="agreement-warning">'+text+'</p>';
-     return '<p>'+text+'</p>';
-   }).join('');
-   const agreement = '<a class="agreement-download" href="'+agreementUrl+'?format=pdf&date='+agreementDate+'" download>'+icon('Download')+'Download agreement (PDF)</a>'+
-     '<div class="terms" tabindex="0" role="region" aria-label="Residential tenancy agreement" aria-describedby="agreement-progress">'+paragraphs+'</div>'+
+   const agreement = agreementDownload()+
+     '<div class="terms" tabindex="0" role="region" aria-label="Residential tenancy agreement" aria-describedby="agreement-progress">'+agreementParagraphs()+'</div>'+
      '<p class="hint" id="agreement-progress" aria-live="polite">Scroll to the bottom of the agreement to enable the checkbox.</p>'+
      '<input type="hidden" name="agreementVersion" value="'+agreementVersion+'">'+
      '<input type="hidden" name="agreementDate" value="'+agreementDate+'">'+
      '<label class="check"><input type="checkbox" name="consent" required disabled>I have read and agree to the Residential Tenancy Agreement.</label>';
    app.innerHTML = auth('Consent and agreement', 'Read and accept the agreement to finish onboarding.',
      form('consent', agreement + submit('Accept and continue')), 'Step 3 of 3');
+ }
+ if (page === 'agreement') {
+   app.innerHTML = shell('Agreement', content('Tenancy agreement', 'Read or download your tenancy agreement.',
+     agreementDownload()+'<article class="card agreement-copy">'+agreementParagraphs()+'</article>', true));
  }
  if (page === 'home' || page === 'activate' || page === 'receipts') {
    const active = receipt?.status === 'verified';
@@ -670,7 +681,7 @@ async function go(p){
    p = 'home';
  }
  if (p === 'activate' && user?.receipt?.status === 'verified') p = 'home';
- if (['home','activate','receipts','review','admin','tenants'].includes(p)) {
+ if (['home','activate','receipts','agreement','review','admin','tenants'].includes(p)) {
    const destination = tenantPage();
    if (isAdminPortal && destination !== 'admin') p = destination;
    if (!isAdminPortal && destination !== 'home') p = destination;
@@ -715,6 +726,7 @@ async function go(p){
    adminRecords = await api('admin?'+params);
  }
  if (p === 'consent') await loadAgreement();
+ if (p === 'agreement') await loadAgreement(user.agreement.date, user.agreement.sha256);
  page=p;render();
 }
 
