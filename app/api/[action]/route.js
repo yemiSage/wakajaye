@@ -1,14 +1,15 @@
 import { randomBytes, randomInt } from 'node:crypto';
-import { NextResponse } from 'next/server';
+import { after, NextResponse } from 'next/server';
 import pg from 'pg';
 import { ADMIN_EMAIL, adminActions, readActions, writeActions, usesAdminSession, sessionDigest, otpDigest, matchesOtp, consumeAuthLimit, adminSessionAge, tenantSessionAge } from '../../../lib/security.mjs';
 import { adminData, tenantDetails } from '../../../lib/admin.mjs';
 import supabaseCA from './supabase-ca';
 import { agreementForDate, agreementVersion } from '../../../lib/agreement.mjs';
+import { amountInKobo, maxPaymentKobo, paymentCharges, paymentLines } from '../../../lib/payment-charges.mjs';
+import { maxProofBytes, maxProofFiles, paymentStatus, proofAt, proofFiles } from '../../../lib/payment-proof.mjs';
 
 export const runtime = 'nodejs';
 
-const maxFileSize = 3 * 1024 ** 2;
 let pool;
 
 class RequestError extends Error {
@@ -22,6 +23,14 @@ function field(data, name, max = 120) {
   const value = typeof data[name] === 'string' ? data[name].trim() : '';
   if (!value || value.length > max || [...value].some(char => char.charCodeAt(0) < 32)) {
     throw new RequestError('Enter a valid ' + name + '.');
+  }
+  return value;
+}
+
+function messageField(data, name, max) {
+  const value = typeof data[name] === 'string' ? data[name].trim() : '';
+  if (!value || value.length > max || /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/.test(value)) {
+    throw new RequestError('Enter a valid ' + name + ' of up to ' + max.toLocaleString('en-NG') + ' characters.');
   }
   return value;
 }
@@ -83,14 +92,15 @@ async function officialReceipt(id, tenant, rent) {
   const encodedSignature = process.env.RECEIPT_SIGNATURE_BASE64;
   if (!encodedSignature) {
     // Preserve the existing text receipt until the private signing asset is configured.
-    const amount = new Intl.NumberFormat('en-NG', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(rent.amount);
+    const amount = new Intl.NumberFormat('en-NG', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
     const text = [
       'WAKAJAYE HOSTEL',
       'Official rent receipt ' + number,
       '',
       'Tenant: ' + name,
       ...(rent.paid ? ['Payment date: ' + rent.paid] : []),
-      'Amount received: NGN ' + amount,
+      ...(rent.charges ? paymentLines(rent).map(([label, value]) => label + ': NGN ' + amount.format(value)) : []),
+      'Amount received: NGN ' + amount.format(rent.amount),
     ].join('\n');
     return { name: 'wakajaye-receipt-' + number + '.txt', bytes: Buffer.from(text), type: 'text/plain; charset=utf-8' };
   }
@@ -106,12 +116,14 @@ async function officialReceipt(id, tenant, rent) {
 async function loadUser(db, email, admin) {
   if (!email) return null;
   const { rows: [tenant] } = await db.query(
-    'SELECT t.profile,t.guarantor,t.rent,r.id AS receipt_id,r.name AS receipt_name,r.status AS receipt_status FROM tenants t LEFT JOIN receipts r USING(email) WHERE t.email=$1', [email],
+    'SELECT t.profile,t.guarantor,t.rent,r.id AS receipt_id,r.name AS receipt_name,r.mime AS receipt_mime,octet_length(r.bytes) AS receipt_size,r.status AS receipt_status FROM tenants t LEFT JOIN receipts r USING(email) WHERE t.email=$1', [email],
   );
   if (!tenant) return null;
+  const rent = JSON.parse(tenant.rent || 'null');
   const receipt = tenant.receipt_status ? {
     name: tenant.receipt_name,
-    status: tenant.receipt_status,
+    status: paymentStatus(tenant.receipt_status, rent),
+    files: proofFiles(rent, tenant.receipt_name, tenant.receipt_mime, tenant.receipt_size),
     ...(tenant.receipt_status === 'verified' ? { number: receiptNumber(tenant.receipt_id) } : {}),
   } : null;
   return {
@@ -119,7 +131,7 @@ async function loadUser(db, email, admin) {
     email,
     admin: email === admin,
     guarantor: Boolean(tenant.guarantor),
-    rent: JSON.parse(tenant.rent || 'null'),
+    rent,
     receipt: receipt ?? null,
   };
 }
@@ -150,15 +162,18 @@ async function read(db, request, action, email, admin) {
   }
   if (action === 'queue') {
     const { rows } = await db.query("SELECT r.id, r.email, t.rent FROM receipts r JOIN tenants t USING(email) WHERE r.status='pending'");
-    return json({ queue: rows.map(({ id, email, rent }) => {
-      const { amount, paid } = JSON.parse(rent);
-      return { id, email, amount, paid };
+    return json({ queue: rows.flatMap(({ id, email, rent }) => {
+      const payment = JSON.parse(rent);
+      return paymentStatus('pending', payment) === 'pending' ? [{ id, email, amount: payment.amount, paid: payment.paid }] : [];
     }) });
   }
   if (action === 'file') {
     const id = request.nextUrl.searchParams.get('id');
     if (!id || !/^\d{1,18}$/.test(id)) throw new RequestError('Receipt not found.', 404);
-    const { rows: [file] } = await db.query('SELECT name, mime, bytes FROM receipts WHERE id=$1', [id]);
+    const index = request.nextUrl.searchParams.get('index') ?? '0';
+    if (!/^[0-4]$/.test(index)) throw new RequestError('Proof not found.', 404);
+    const { rows: [stored] } = await db.query('SELECT r.name,r.mime,r.bytes,t.rent FROM receipts r JOIN tenants t USING(email) WHERE r.id=$1', [id]);
+    const file = stored && proofAt(stored.bytes, proofFiles(JSON.parse(stored.rent || 'null'), stored.name, stored.mime, stored.bytes.length), Number(index));
     if (!file) throw new RequestError('Receipt not found.', 404);
     const name = encodeURIComponent(file.name).replace(/'/g, '%27');
     return new Response(file.bytes, { headers: {
@@ -173,7 +188,46 @@ async function read(db, request, action, email, admin) {
   throw new RequestError('Not found.', 404);
 }
 
-async function mutate(db, action, data, email, admin, token, secure, adminScope = false) {
+function decodeProof(data) {
+  if (!data || typeof data !== 'object') throw new RequestError('Choose a valid proof file.');
+  const name = field(data, 'name', 240).split(/[\\/]/).at(-1);
+  const encoded = field(data, 'file', 4_250_000);
+  const bytes = Buffer.from(encoded, 'base64');
+  const signatures = [['255044462d', 'application/pdf'], ['ffd8ff', 'image/jpeg'], ['89504e470d0a1a0a', 'image/png']];
+  const magic = bytes.subarray(0, 8).toString('hex');
+  const mime = signatures.find(([prefix]) => magic.startsWith(prefix))?.[1];
+  if (!name || !mime || bytes.length > maxProofBytes || bytes.toString('base64') !== encoded) {
+    throw new RequestError('Choose a PDF, JPG, or PNG up to 3 MB.');
+  }
+  return { name, mime, size: bytes.length, bytes };
+}
+
+async function readProofSubmission(db, data, current) {
+  const entries = data.proofs ?? [data];
+  if (!Array.isArray(entries) || entries.length < 1 || entries.length > maxProofFiles) {
+    throw new RequestError('Add between one and five proof files.');
+  }
+  let stored;
+  if (entries.some(entry => entry?.keep !== undefined) && current.receipt) {
+    const result = await db.query('SELECT bytes FROM receipts WHERE email=$1', [current.email]);
+    stored = result.rows[0]?.bytes;
+  }
+  const kept = new Set();
+  const files = entries.map(entry => {
+    if (entry?.keep === undefined) return decodeProof(entry);
+    const index = entry.keep;
+    const proof = stored && Number.isInteger(index) && index >= 0 && proofAt(stored, current.receipt.files, index);
+    if (!proof || kept.has(index)) throw new RequestError('One of the original proof files could not be kept. Refresh and try again.');
+    kept.add(index);
+    return proof;
+  });
+  if (files.reduce((total, file) => total + file.size, 0) > maxProofBytes) {
+    throw new RequestError('Proof files must be 3 MB or less in total.');
+  }
+  return files;
+}
+
+async function mutate(db, action, data, email, admin, token, secure, adminScope = false, onRegistration = () => {}) {
   const now = Date.now() / 1000;
   if (action === 'code') {
     const address = emailField(data);
@@ -207,7 +261,8 @@ async function mutate(db, action, data, email, admin, token, secure, adminScope 
       throw new RequestError('No account yet. Choose Create an account.');
     }
     await db.query('DELETE FROM codes WHERE email=$1', [address]);
-    await db.query('INSERT INTO tenants(email) VALUES($1) ON CONFLICT (email) DO NOTHING', [address]);
+    const inserted = await db.query('INSERT INTO tenants(email) VALUES($1) ON CONFLICT (email) DO NOTHING', [address]);
+    if (inserted.rowCount === 1 && record.mode === 'create') onRegistration(address);
     await db.query('DELETE FROM sessions WHERE token=$1 OR expires<$2', [token, now]);
     const session = randomBytes(32).toString('base64url');
     const sessionAge = isAdminLogin ? adminSessionAge : tenantSessionAge;
@@ -226,6 +281,7 @@ async function mutate(db, action, data, email, admin, token, secure, adminScope 
   }
 
   const current = await loadUser(db, email, admin);
+  if (!current) throw new RequestError('Sign in to continue.', 401);
   switch (action) {
     case 'profile': {
       const dob = dateField(data, 'dob');
@@ -277,34 +333,63 @@ async function mutate(db, action, data, email, admin, token, secure, adminScope 
       break;
     }
     case 'activate': {
-      if (!current.guarantor || current.agreement?.version !== agreementVersion || current.receipt) {
+      if (!current.guarantor || current.agreement?.version !== agreementVersion || current.receipt?.status === 'verified') {
         throw new RequestError('This action is unavailable.', 403);
       }
-      const amountText = field(data, 'amount', 20);
-      const amount = Number(amountText);
-      if (!/^\d+(\.\d{1,2})?$/.test(amountText) || amount < 0.01 || amount > 1e9) {
+      if (current.receipt && (data.submittedAt ?? null) !== (current.rent?.submittedAt ?? null)) {
+        throw new RequestError('This submission has changed. Refresh and try again.', 409);
+      }
+      let charges;
+      let totalKobo;
+      if (data.charges === undefined) {
+        // Older browser bundles still submit a single amount.
+        totalKobo = amountInKobo(data.amount);
+      } else {
+        if (!data.charges || typeof data.charges !== 'object' || Array.isArray(data.charges)) {
+          throw new RequestError('Enter valid amounts for each payment charge.');
+        }
+        charges = {};
+        totalKobo = 0;
+        for (const [key, label] of paymentCharges) {
+          const value = data.charges[key] ?? '';
+          const kobo = value === '' && key !== 'houseRent' ? 0 : amountInKobo(value);
+          if (kobo === null || (key === 'houseRent' && kobo === 0)) {
+            throw new RequestError('Enter a valid amount for ' + label.toLowerCase() + '.');
+          }
+          charges[key] = kobo / 100;
+          totalKobo += kobo;
+        }
+      }
+      if (totalKobo === null || totalKobo < 1 || totalKobo > maxPaymentKobo) {
         throw new RequestError('Enter a valid payment amount.');
       }
-      const name = field(data, 'name', 240).split(/[\\/]/).at(-1);
-      const encoded = field(data, 'file', 4_250_000);
-      const bytes = Buffer.from(encoded, 'base64');
-      const signatures = [['255044462d', 'application/pdf'], ['ffd8ff', 'image/jpeg'], ['89504e470d0a1a0a', 'image/png']];
-      const signature = bytes.subarray(0, 8).toString('hex');
-      const mime = signatures.find(([magic]) => signature.startsWith(magic))?.[1];
-      if (!name || !mime || bytes.length > maxFileSize || bytes.toString('base64') !== encoded) {
-        throw new RequestError('Choose a PDF, JPG, or PNG up to 3 MB.');
-      }
-      const rent = { ...current.rent, amount, submittedAt: new Date().toISOString() };
+      const files = await readProofSubmission(db, data, current);
+      const proofs = files.map(({ name, mime, size }) => ({ name, mime, size }));
+      const rent = { amount: totalKobo / 100, ...(charges ? { charges } : {}), proofs, submittedAt: new Date().toISOString() };
       await db.query('UPDATE tenants SET rent=$1 WHERE email=$2', [JSON.stringify(rent), email]);
-      await db.query("INSERT INTO receipts(email,name,mime,bytes,status) VALUES($1,$2,$3,$4,'pending')", [email, name, mime, bytes]);
+      await db.query("INSERT INTO receipts(email,name,mime,bytes,status) VALUES($1,$2,$3,$4,'pending') ON CONFLICT (email) DO UPDATE SET name=excluded.name,mime=excluded.mime,bytes=excluded.bytes,status=excluded.status",
+        [email, proofs[0].name, proofs[0].mime, Buffer.concat(files.map(file => file.bytes))]);
       break;
     }
+    case 'review-payment':
     case 'approve': {
       if (email !== admin) throw new RequestError('Admin access required.', 403);
       if (!Number.isSafeInteger(data.id) || data.id < 1) throw new RequestError('Receipt not found.', 404);
       const { rows: [receipt] } = await db.query("SELECT id, email FROM receipts WHERE id=$1 AND status='pending'", [data.id]);
       if (!receipt) throw new RequestError('This receipt is no longer waiting for review.', 404);
+      await db.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))', [receipt.email]);
       const tenant = await loadUser(db, receipt.email, admin);
+      if (tenant?.receipt?.status !== 'pending') throw new RequestError('This receipt is no longer waiting for review.', 404);
+      if ((data.submittedAt ?? null) !== (tenant.rent.submittedAt ?? null)) {
+        throw new RequestError('The tenant updated this submission. Reopen it to review the latest version.', 409);
+      }
+      if (action === 'review-payment') {
+        if (!['correction', 'rejected'].includes(data.decision)) throw new RequestError('Choose a review decision.');
+        const reason = messageField(data, 'reason', 1000);
+        const rent = { ...tenant.rent, review: { status: data.decision, reason, at: new Date().toISOString() } };
+        await db.query('UPDATE tenants SET rent=$1 WHERE email=$2', [JSON.stringify(rent), receipt.email]);
+        break;
+      }
       const rent = {
         ...tenant.rent,
         approvedAt: new Date().toISOString(),
@@ -319,6 +404,27 @@ async function mutate(db, action, data, email, admin, token, secure, adminScope 
       await db.query('UPDATE tenants SET rent=$1 WHERE email=$2', [JSON.stringify(rent), receipt.email]);
       await db.query("UPDATE receipts SET status='verified' WHERE id=$1", [receipt.id]);
       break;
+    }
+    case 'email-tenant': {
+      if (email !== admin) throw new RequestError('Admin access required.', 403);
+      const target = emailField(data);
+      const { rowCount } = await db.query('SELECT 1 FROM tenants WHERE email=$1', [target]);
+      if (!rowCount) throw new RequestError('Tenant not found.', 404);
+      const subject = field(data, 'subject', 120);
+      const message = messageField(data, 'message', 5000);
+      await sendMail(target, subject, message);
+      return json({ ok: true });
+    }
+    case 'delete-tenant': {
+      if (email !== admin) throw new RequestError('Admin access required.', 403);
+      const target = emailField(data);
+      await db.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))', [target]);
+      await db.query('DELETE FROM receipts WHERE email=$1', [target]);
+      await db.query('DELETE FROM sessions WHERE email=$1', [target]);
+      await db.query('DELETE FROM codes WHERE email=$1', [target]);
+      const result = await db.query('DELETE FROM tenants WHERE email=$1', [target]);
+      if (!result.rowCount) throw new RequestError('Tenant not found.', 404);
+      return json({ ok: true });
     }
     default:
       throw new RequestError('Not found.', 404);
@@ -407,10 +513,21 @@ async function handle(request, { params }) {
     const admin = ADMIN_EMAIL;
     if (adminScope && action !== 'verify' && email !== admin) throw new RequestError('Admin sign-in required.', 403);
     if (write) await db.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))', [address || email || 'anonymous']);
+    let registeredEmail;
     const response = write
-      ? await mutate(db, action, data, email, admin, token, protocol === 'https', adminScope)
+      ? await mutate(db, action, data, email, admin, token, protocol === 'https', adminScope, address => { registeredEmail = address; })
       : await read(db, request, action, email, adminScope ? admin : undefined);
     await db.query('COMMIT');
+    if (registeredEmail) {
+      after(async () => {
+        try {
+          await sendMail(ADMIN_EMAIL, 'New Wakajaye tenant registration',
+            'A new tenant verified their email and registered on Wakajaye.\n\nTenant email: ' + registeredEmail);
+        } catch (error) {
+          console.error('Wakajaye registration notification failed', error.status ?? error.name);
+        }
+      });
+    }
     return response;
   } catch (error) {
     if (db) await db.query('ROLLBACK').catch(() => {});

@@ -4,6 +4,8 @@ import { readFileSync } from 'node:fs';
 import { randomBytes, randomInt } from 'node:crypto';
 import vm from 'node:vm';
 import * as security from '../lib/security.mjs';
+import * as charges from '../lib/payment-charges.mjs';
+import * as proofs from '../lib/payment-proof.mjs';
 import { receiptPdf } from '../lib/receipt-pdf.mjs';
 
 process.env.AUTH_SECRET = 'test-only-secret-never-used-in-production';
@@ -15,8 +17,7 @@ const record = mode => ({ mode, digest: security.otpDigest(address, mode, salt, 
 function routeContext(overrides = {}) {
   const source = readFileSync('app/api/[action]/route.js','utf8');
   const context = vm.createContext({
-    ...security, randomBytes, randomInt, Buffer, Response, AbortSignal, console,
-    maxFileSize: 3*1024*1024,
+    ...security, ...charges, ...proofs, randomBytes, randomInt, Buffer, Response, AbortSignal, console,
     process: { env: {} },
     NextResponse: { json(data, options) {
       const response = Response.json(data, options);
@@ -59,6 +60,45 @@ test('admin and tenant tokens and OTPs are not interchangeable', () => {
   assert.equal(security.usesAdminSession('session','tenant'),false);
 });
 
+test('a verified new registration schedules one admin email after commit', async () => {
+  const newEmail = 'new-tenant@example.com';
+  const callbacks = [];
+  const messages = [];
+  let created = false;
+  let committed = false;
+  const db = {
+    async query(sql) {
+      if (sql === 'BEGIN') committed = false;
+      if (sql === 'COMMIT') committed = true;
+      if (sql.startsWith('SELECT * FROM codes')) return { rows:[{
+        ...record('create'), digest: security.otpDigest(newEmail, 'create', salt, code),
+      }] };
+      if (sql.startsWith('INSERT INTO tenants')) {
+        const rowCount = created ? 0 : 1;
+        created = true;
+        return { rowCount };
+      }
+      if (sql.startsWith('SELECT t.profile')) return { rows:[{}] };
+      return { rows:[] };
+    },
+    release() {},
+  };
+  const context = routeContext({
+    process:{env:{SUPABASE_DB_URL:'test',BREVO_API_KEY:'test',BREVO_FROM_EMAIL:'sender@example.com'}},
+    pg:{Pool:class { async connect() { return db; } }}, supabaseCA:'test', consumeAuthLimit:async () => true,
+    after(callback) { assert(committed); callbacks.push(callback); },
+    fetch:async (_url, options) => { messages.push(JSON.parse(options.body)); return { status:201 }; },
+  });
+  const verify = () => call(context, 'verify', {method:'POST',body:{email:newEmail,code}});
+  assert.equal((await verify()).status,200);
+  assert.equal((await verify()).status,200);
+  assert.equal(callbacks.length,1);
+  assert.equal(messages.length,0);
+  await callbacks[0]();
+  assert.equal(messages[0].to[0].email,address);
+  assert.match(messages[0].textContent,/new-tenant@example\.com/);
+});
+
 test('request guards reject CSRF, malformed bodies and tenant-cookie admin access before using the database',async()=>{
   const context = routeContext(); // No database configured: reaching it would return 503.
   const cases = [
@@ -68,6 +108,9 @@ test('request guards reject CSRF, malformed bodies and tenant-cookie admin acces
     ['file?id=1',{cookies:{wj:'a'.repeat(43)}},403],
     ['receipt',{cookies:{wj_admin:'a'.repeat(43)}},401],
     ['approve',{method:'POST',body:{id:1},cookies:{wj:'a'.repeat(43)}},403],
+    ['review-payment',{method:'POST',body:{id:1},cookies:{wj:'a'.repeat(43)}},403],
+    ['email-tenant',{method:'POST',body:{email:address},cookies:{wj:'a'.repeat(43)}},403],
+    ['delete-tenant',{method:'POST',body:{email:address},cookies:{wj:'a'.repeat(43)}},403],
     ['profile',{method:'POST',body:{}},401],
     ['code',{method:'POST',body:{email:address,mode:'signin'},origin:'https://attacker.example'},403],
     ['code',{method:'POST',body:{},headers:{'sec-fetch-site':'cross-site'}},403],
@@ -105,6 +148,7 @@ test('approval emails the same receipt the tenant can download and keeps it pend
     bytes: await receiptPdf({number:`WJ-00000${id}`,name:payment.issuedTo,email:user.email,rent:payment}, png),
   });
   const db = {async query(sql, params) {
+    if (sql.startsWith('SELECT pg_advisory_xact_lock')) return {};
     if (sql.startsWith('SELECT t.profile')) {
       return {rows:[params[0] === tenant ? {profile,rent,receipt_status:status,receipt_id:7} : {}]};
     }
@@ -229,10 +273,56 @@ test('invalid payment amounts and disguised uploads are rejected before storing 
   assert.equal(writes,0);
 });
 
+test('review reasons survive reads and resubmission replaces selected proofs without changing the receipt id',async()=>{
+  const tenant = 'tenant@example.com';
+  const profile = JSON.stringify({agreement:{version:3}});
+  const initial = Buffer.from('%PDF-1.7 first');
+  const replaced = Buffer.from('%PDF-1.7 replaced');
+  const keep = Buffer.from('%PDF-1.7 retained');
+  const upload = (name, bytes) => ({name,file:bytes.toString('base64')});
+  let receipt;
+  let rent = null;
+  const context = routeContext({agreementVersion:3});
+  const db = {async query(sql, params) {
+    if (sql.startsWith('SELECT t.profile')) {
+      if (params[0] !== tenant) return {rows:[{}]};
+      return {rows:[{profile,guarantor:'{}',rent,
+        receipt_status:receipt?.status,receipt_id:receipt?.id,receipt_name:receipt?.name,receipt_mime:receipt?.mime,receipt_size:receipt?.bytes.length}]};
+    }
+    if (sql.startsWith('SELECT bytes FROM receipts')) return {rows:[receipt]};
+    if (sql.startsWith('SELECT r.name,r.mime,r.bytes')) return {rows:[{...receipt,rent}]};
+    if (sql.startsWith('SELECT id, email FROM receipts')) return {rows:[receipt]};
+    if (sql.startsWith('SELECT pg_advisory_xact_lock')) return {};
+    if (sql.startsWith('UPDATE tenants SET rent')) { rent = params[0]; return {}; }
+    if (sql.startsWith('INSERT INTO receipts')) {
+      receipt = {id:receipt?.id ?? 7,email:params[0],name:params[1],mime:params[2],bytes:params[3],status:'pending'};
+      return {};
+    }
+    assert.fail('Unexpected query: '+sql);
+  }};
+  const submit = data => context.mutate(db,'activate',data,tenant,address,'',true);
+  const payment = {charges:{houseRent:'200000.01',electricity:'0.10',sanitation:'0.20'}};
+  await assert.rejects(submit({...payment,proofs:Array(6).fill(upload('bad.pdf',initial))}),/one and five/);
+  await submit({...payment,proofs:[upload('first.pdf',initial),upload('retain.pdf',keep)]});
+  const first = JSON.parse(rent);
+  assert.equal(first.amount,200000.31);
+  await context.mutate(db,'review-payment',{id:7,submittedAt:first.submittedAt,decision:'correction',reason:'Upload a clearer first page.'},address,address,'',true,true);
+  assert.equal((await context.loadUser(db,tenant,address)).receipt.status,'correction');
+  await assert.rejects(submit({...payment,proofs:[{keep:1}],submittedAt:'old'}),/submission has changed/);
+  await submit({...payment,proofs:[upload('replacement.pdf',replaced),{keep:1}],submittedAt:first.submittedAt});
+  const updated = await context.loadUser(db,tenant,address);
+  assert.equal(updated.receipt.status,'pending');
+  assert.equal(updated.rent.review,undefined);
+  assert.equal(receipt.id,7);
+  assert.equal(updated.receipt.files[0].name,'replacement.pdf');
+  const response = await context.read(db,request('file?id=7&index=1'),'file',address,address);
+  assert.deepEqual(Buffer.from(await response.arrayBuffer()),keep);
+});
+
 test('amounts group thousands and untrusted tenant data cannot escape HTML attributes',()=>{
   const app={dataset:{portal:'tenant'},querySelectorAll:()=>[],querySelector:()=>null,addEventListener(){}};
   const context=vm.createContext({document:{querySelector:selector=>selector==='#app'?app:{},addEventListener(){}},__WAKAJAYE_ICONS__:{},Intl,Date,setTimeout,clearTimeout});
-  const source=readFileSync('src/portal.js','utf8');
+  const source=readFileSync('src/portal.js','utf8').replace(/^import .*;\n/gm,'');
   vm.runInContext(source.slice(0,source.indexOf('email = app.querySelector')),context);
   for(const [input,expected] of [['1234567.89','1,234,567.89'],['250000','250,000'],['.50','0.50'],['0001250','1,250'],['1,250.','1,250.'],['bad',null],['1.234',null]])assert.equal(context.formatAmount(input),expected);
   const email='evil"><img/src=x/onerror=alert(1)>@example.com';

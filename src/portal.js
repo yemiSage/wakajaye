@@ -1,3 +1,6 @@
+import { amountInKobo, maxPaymentKobo, paymentCharges, paymentLines } from '../lib/payment-charges.mjs';
+import { maxProofBytes, maxProofFiles } from '../lib/payment-proof.mjs';
+
 const app=document.querySelector('#app'), notice=document.querySelector('#notice');
 const logo='<img class="logo" src="/wordmark.svg" alt="Wakajaye">';
 const icons = __WAKAJAYE_ICONS__;
@@ -14,6 +17,7 @@ let adminRecords = null;
 let adminPage = 1;
 let adminSearch = '';
 let adminFilter = '';
+let paymentProofs = [];
 let agreementText = '';
 const agreementVersion = 3;
 let agreementDate = '';
@@ -104,31 +108,37 @@ function render(){
  }
  if (page === 'home' || page === 'activate' || page === 'receipts') {
    const active = receipt?.status === 'verified';
-   const status = active ? 'Active' : receipt ? 'Pending' : 'Inactive';
-   const message = active ? 'Your rent is active.' : receipt
-     ? 'Your payment is pending landlord approval.'
-     : 'Submit your payment details to activate your rent.';
+   const status = active ? 'active' : receipt?.status ?? 'inactive';
+   const message = {
+     active: 'Your rent is active.', pending: 'Your payment is pending landlord approval.',
+     correction: 'The landlord requested a correction.', rejected: 'Your payment submission was rejected.',
+     inactive: 'Submit your payment details to activate your rent.',
+   }[status];
+   const reviewReason = rent?.review?.reason ? '<p class="review-reason"><strong>Reason</strong> '+esc(rent.review.reason)+'</p>' : '';
    const rentCard = '<article class="card rent-card"><div class="rent-card-header"><span class="mark">'+icon('Home')+
-     '</span><div class="rent-card-summary"><h2>Your rent</h2><p>'+message+'</p></div><span class="tag '+(active?'good':'')+'">'+status+'</span></div>'+
-     (receipt ? '<dl class="details"><div><dt>Amount paid</dt><dd>'+money(rent.amount)+'</dd></div></dl>'+(active?'':btn('Refresh status','refresh-rent'))
+     '</span><div class="rent-card-summary"><h2>Your rent</h2><p>'+message+'</p></div>'+statusTag(status)+'</div>'+reviewReason+
+     (receipt ? '<dl class="details">'+(rent.charges ? paymentLines(rent).map(([label,amount]) =>
+       '<div><dt>'+label+'</dt><dd>'+money(amount)+'</dd></div>').join('') : '')+
+       '<div><dt>Total paid</dt><dd>'+money(rent.amount)+'</dd></div></dl>'+(active?'':'<div class="action-row">'+btn('Edit payment','activate','primary')+btn('Refresh status','refresh-rent')+'</div>')
        : btn('Activate my rent', 'activate', 'primary'))+'</article>';
    const issuedDate = rent?.approvedAt && new Date(rent.approvedAt).toLocaleDateString('en-GB', {
      day: 'numeric', month: 'short', year: 'numeric', timeZone: 'Africa/Lagos',
    });
    const receiptRow = active
      ? '<tr><td>'+esc(issuedDate || '—')+'</td><td>'+esc(receipt.number)+'</td><td><a class="btn receipt-download" href="/api/receipt" download aria-label="Download receipt '+esc(receipt.number)+'">'+icon('Download')+'<span>Download</span></a></td></tr>'
-     : '<tr><td colspan="3">'+(receipt ? 'Your receipt will be available after your payment is approved.' : 'No receipts issued yet.')+'</td></tr>';
+     : '<tr><td colspan="3">'+(receipt ? message : 'No receipts issued yet.')+'</td></tr>';
    const receiptTable = '<div class="table-scroll"><table class="tenant-table receipt-table" aria-label="Issued rent receipts">'+
-     '<thead><tr><th scope="col">Date</th><th scope="col">Receipt number</th><th scope="col">Action</th></tr></thead><tbody>'+receiptRow+'</tbody></table></div>';
+     '<thead><tr><th scope="col">Date</th><th scope="col">Receipt number</th><th scope="col">Action</th></tr></thead><tbody>'+receiptRow+'</tbody></table></div>'+
+     (receipt && !active ? reviewReason+'<div class="action-row">'+btn('Edit payment','activate')+'</div>' : '');
    app.innerHTML = page === 'receipts'
      ? shell('Receipts', content('Rent receipts', 'View and download your issued rent receipts.', receiptTable, true))
      : shell('Home', content('Welcome, '+esc(user.first), 'Manage your Wakajaye rent and receipts in one place.', rentCard));
    if (page === 'activate') {
      app.insertAdjacentHTML('beforeend', '<dialog class="rent-sheet" aria-labelledby="rent-sheet-title">'+
-       '<div class="row"><h2 id="rent-sheet-title">Activate my rent</h2>'+btn('Close', 'close-sheet', 'quiet')+'</div>'+
-       '<p>Enter the amount you paid and attach your payment receipt.</p>'+
-       form('activate', '<label>Amount paid<div class="money-field"><input name="amount" type="text" inputmode="decimal" autocomplete="off" placeholder="0.00" aria-label="Amount paid in naira" required value="'+esc(rent?.amount)+'"><span aria-hidden="true">₦</span></div></label>'+
-         uploadField()+submit('Save'))+'</dialog>');
+       '<div class="row"><h2 id="rent-sheet-title">'+(receipt ? 'Edit payment' : 'Activate my rent')+'</h2>'+btn('Close', 'close-sheet', 'quiet')+'</div>'+
+       '<p>Enter what you paid for each charge and attach your proof of payment.</p>'+
+       reviewReason+form('activate', paymentFields(rent)+
+         uploadField()+submit(receipt ? 'Resubmit for review' : 'Save'))+'</dialog>');
      const dialog = app.querySelector('dialog');
      dialog.addEventListener('cancel', event => {
        event.preventDefault();
@@ -427,9 +437,10 @@ document.addEventListener('click', event => {
   }
 });
 
+const paymentStatusLabels = { active:'Active', pending:'Pending', inactive:'Inactive', correction:'Correction requested', rejected:'Rejected' };
 function statusTag(status) {
-  return '<span class="tag '+(status==='active'?'good':status==='pending'?'pending':'')+'">'+
-    ({active:'Active', pending:'Pending', inactive:'Inactive'}[status])+'</span>';
+  const style = {active:'good',pending:'pending',correction:'pending',rejected:'rejected'}[status] || '';
+  return '<span class="tag '+style+'">'+(paymentStatusLabels[status] || 'Inactive')+'</span>';
 }
 
 function renderAdmin() {
@@ -450,8 +461,8 @@ function renderAdmin() {
   } else {
     title = page === 'review' ? 'Receipt review' : 'Tenants';
     description = page === 'review' ? 'Review proof of payment before activating rent.' : 'Find tenants and view their tenancy records.';
-    const options = ['', 'pending', 'active', 'inactive'].map(value => '<option value="'+value+'"'+
-      (adminFilter===value?' selected':'')+'>'+({ '':'All statuses', pending:'Pending',active:'Active',inactive:'Inactive'}[value])+'</option>').join('');
+    const options = ['', ...Object.keys(paymentStatusLabels)].map(value => '<option value="'+value+'"'+
+      (adminFilter===value?' selected':'')+'>'+(paymentStatusLabels[value] || 'All statuses')+'</option>').join('');
     body = form('admin-search', '<div class="admin-search-row">'+
       '<label>Search tenants<input name="search" type="search" value="'+esc(adminSearch)+'" placeholder="Name, email, or phone"></label>'+
       (page==='tenants'?'<label>Rent status<select name="status">'+options+'</select></label>':'')+
@@ -469,7 +480,22 @@ function tenantTable(tenants) {
   return '<div class="table-scroll"><table class="tenant-table"><thead><tr><th>Tenant</th><th>Rent</th><th>Amount paid</th><th></th></tr></thead><tbody>'+
     tenants.map(tenant => '<tr><td><strong>'+esc(tenant.name)+'</strong><small>'+esc(tenant.email)+'</small></td>'+
       '<td>'+statusTag(tenant.status)+'</td><td>'+(tenant.rent?money(tenant.rent.amount):'—')+'</td><td>'+
-      btn(icon('Eye')+'View', 'tenant:'+tenant.email)+'</td></tr>').join('')+'</tbody></table></div>';
+      '<div class="action-row">'+btn(icon('Eye')+'View', 'tenant:'+tenant.email)+
+      adminIconButton('Email','Email tenant','email-tenant:'+tenant.email)+
+      adminIconButton('Trash','Delete tenant','delete-tenant:'+tenant.email)+'</div></td></tr>').join('')+'</tbody></table></div>';
+}
+
+function adminIconButton(symbol, label, action) {
+  return btn(icon(symbol), action, 'icon-btn').replace('data-go=', 'aria-label="'+label+'" title="'+label+'" data-go=');
+}
+
+function proofPreview(file, index, receiptId) {
+  const url = '/api/file?id='+encodeURIComponent(receiptId)+'&index='+index;
+  const preview = file.mime === 'application/pdf'
+    ? '<iframe sandbox="" referrerpolicy="no-referrer" title="Payment proof '+(index+1)+'" src="'+url+'&preview=1"></iframe>'
+    : '<img loading="lazy" alt="Payment proof '+(index+1)+'" src="'+url+'&preview=1">';
+  return '<details class="proof-preview"'+(index === 0 ? ' open' : '')+'><summary>'+esc(file.name)+'</summary>'+
+    '<div class="receipt-preview">'+preview+'</div><a class="btn" href="'+url+'">'+icon('Download')+'Download proof</a></details>';
 }
 
 function showTenant(tenant) {
@@ -479,17 +505,22 @@ function showTenant(tenant) {
   dialog.setAttribute('aria-label', 'Tenant details');
   const profile = tenant.profile;
   const guarantor = tenant.guarantor;
+  const reviewKey = tenant.receipt ? tenant.receipt.id+':'+encodeURIComponent(tenant.rent?.submittedAt ?? '') : '';
   dialog.innerHTML = '<div class="row"><h2>'+esc(tenant.name)+'</h2><button class="btn quiet" type="button" data-close-tenant aria-label="Close tenant details">'+icon('Close')+'</button></div>'+
     '<div class="tenant-status">'+statusTag(tenant.status)+'</div><h3>Personal information</h3>'+
     rows([['Email',tenant.email],['Phone',profile.phone],['Gender',profile.gender],['Date of birth',profile.dob]])+
     '<h3>Guarantor</h3>'+(guarantor?rows([['Name',guarantor.name],['Relationship',guarantor.relationship],['Phone',guarantor.phone],['Email',guarantor.email]]):'<p>Not submitted.</p>')+
     '<h3>Agreement</h3>'+rows([['Onboarding',tenant.onboardingComplete?'Complete':'Incomplete'],['Accepted',profile.agreement?.acceptedAt?new Date(profile.agreement.acceptedAt).toLocaleString('en-GB',{timeZone:'Africa/Lagos'}):''],['Version',profile.agreement?.version],['Agreement date',profile.agreement?.date]])+
-    '<h3>Payment</h3>'+rows([['Amount',tenant.rent?money(tenant.rent.amount):''],['Submitted',tenant.rent?.submittedAt?new Date(tenant.rent.submittedAt).toLocaleString('en-GB',{timeZone:'Africa/Lagos'}):'']])+
-    (tenant.receipt?'<a class="btn" href="/api/file?id='+tenant.receipt.id+'">'+icon('Download')+'Download proof</a>'+
-      '<div class="receipt-preview">'+(tenant.receipt.mime==='application/pdf'
-        ?'<iframe sandbox="" referrerpolicy="no-referrer" title="Uploaded payment receipt" src="/api/file?id='+tenant.receipt.id+'&preview=1"></iframe>'
-        :'<img alt="Uploaded payment receipt" src="/api/file?id='+tenant.receipt.id+'&preview=1">')+'</div>'+
-      (tenant.status==='pending'?btn(icon('Check')+'Approve payment and issue receipt','approve:'+tenant.receipt.id,'primary approve-payment'):'')
+    '<h3>Payment</h3>'+rows([
+      ...(tenant.rent?.charges ? paymentLines(tenant.rent).map(([label,amount]) => [label,money(amount)]) : []),
+      ['Total paid',tenant.rent?money(tenant.rent.amount):''],
+      ['Submitted',tenant.rent?.submittedAt?new Date(tenant.rent.submittedAt).toLocaleString('en-GB',{timeZone:'Africa/Lagos'}):''],
+    ])+
+    (tenant.receipt?tenant.receipt.files.map((file,index) => proofPreview(file,index,tenant.receipt.id)).join('')+
+      (tenant.rent?.review?.reason ? '<p class="review-reason">'+esc(tenant.rent.review.reason)+'</p>' : '')+
+      (tenant.status==='pending' ? '<div class="action-row review-actions">'+
+        btn('Request correction','correction:'+reviewKey)+btn('Reject payment','reject:'+reviewKey)+'</div>'+
+        btn(icon('Check')+'Approve payment and issue receipt','approve:'+reviewKey,'primary approve-payment') : '')
       :'<p>No payment receipt submitted.</p>');
   const close = () => { if (dialog.querySelector('[aria-busy="true"]')) return; dialog.close(); dialog.remove(); app.querySelector('[data-go="'+CSS.escape('tenant:'+tenant.email)+'"]')?.focus(); };
   dialog.querySelector('[data-close-tenant]').addEventListener('click',close);
@@ -500,11 +531,21 @@ function showTenant(tenant) {
 
 function uploadField() {
   return '<label class="upload-card">'+
-    '<input name="file" type="file" accept=".pdf,.jpg,.jpeg,.png" required class="receipt-file">'+
+    '<input type="file" accept=".pdf,.jpg,.jpeg,.png" multiple class="receipt-file">'+
     '<span class="upload-symbol">'+icon('Upload')+'</span>'+
-    '<span class="upload-title">Choose payment receipt</span>'+
-    '<span class="upload-description">PDF, JPG, or PNG · Up to 3 MB</span>'+
-    '<span class="upload-selected" aria-live="polite"></span></label>';
+    '<span class="upload-title">Add proof files</span>'+
+    '<span class="upload-description">Up to five PDFs, JPGs, or PNGs · 3 MB total</span>'+
+    '<span class="upload-selected" aria-live="polite"></span></label><ul class="proof-list"></ul>';
+}
+
+function paymentFields(rent) {
+  return '<div class="payment-fields">'+paymentCharges.map(([key,label]) => {
+    const required = key === 'houseRent';
+    const value = rent?.charges?.[key] ?? (required ? rent?.amount : undefined);
+    return '<label><span>'+label+(required ? '' : ' <small>(optional)</small>')+
+      '</span><div class="money-field"><input name="'+key+'" type="text" inputmode="decimal" autocomplete="off" placeholder="0.00"'+
+      ' value="'+esc(value > 0 ? formatAmount(String(value)) : '')+'"'+(required ? ' required' : '')+'><span aria-hidden="true">₦</span></div></label>';
+  }).join('')+'</div><div class="payment-total"><span>Total paid</span><output data-payment-total>₦0.00</output></div>';
 }
 
 function formatAmount(value) {
@@ -516,29 +557,37 @@ function formatAmount(value) {
 }
 
 function initializeAmount() {
-  const input = app.querySelector('.money-field input');
-  if (!input) return;
-  let previous = formatAmount(input.value) || '';
-  input.value = previous;
+  const inputs = app.querySelectorAll('.money-field input');
+  if (!inputs.length) return;
+  const total = app.querySelector('[data-payment-total]');
   const validate = () => {
-    const raw = input.value.replace(/,/g,'');
-    const valid = /^\d+(\.\d{1,2})?$/.test(raw) && Number(raw)>=0.01 && Number(raw)<=1e9;
-    input.setCustomValidity(valid ? '' : 'Enter an amount between ₦0.01 and ₦1,000,000,000.');
-  };
-  input.addEventListener('input', () => {
-    const before = input.value.slice(0,input.selectionStart).replace(/,/g,'').length + (input.value.startsWith('.') ? 1 : 0);
-    const formatted = formatAmount(input.value);
-    input.value = formatted === null ? previous : formatted;
-    previous = input.value;
-    let index = 0;
-    let digits = 0;
-    while (index<input.value.length && digits<before) {
-      if (input.value[index]!==',') digits++;
-      index++;
+    let totalKobo = 0;
+    for (const input of inputs) {
+      const raw = input.value.replace(/,/g,'');
+      const kobo = raw === '' && !input.required ? 0 : amountInKobo(raw);
+      const valid = kobo !== null && kobo >= (input.required ? 1 : 0) && kobo <= maxPaymentKobo;
+      input.setCustomValidity(valid ? '' : 'Enter a valid payment amount.');
+      if (valid) totalKobo += kobo;
     }
-    input.setSelectionRange(index,index);
-    validate();
-  });
+    if (totalKobo > maxPaymentKobo) inputs[0].setCustomValidity('The total cannot exceed ₦1,000,000,000.');
+    total.value = money(totalKobo / 100);
+  };
+  for (const input of inputs) {
+    let previous = input.value;
+    input.addEventListener('input', () => {
+      const before = input.value.slice(0,input.selectionStart).replace(/,/g,'').length + (input.value.startsWith('.') ? 1 : 0);
+      input.value = formatAmount(input.value) ?? previous;
+      previous = input.value;
+      let index = 0;
+      let digits = 0;
+      while (index<input.value.length && digits<before) {
+        if (input.value[index]!==',') digits++;
+        index++;
+      }
+      input.setSelectionRange(index,index);
+      validate();
+    });
+  }
   validate();
 }
 
@@ -546,17 +595,41 @@ function initializeUpload() {
   const input = app.querySelector('.receipt-file');
   if (!input) return;
   const card = input.closest('.upload-card');
+  const list = app.querySelector('.proof-list');
+  const feedback = card.querySelector('.upload-selected');
+  paymentProofs = (user?.receipt?.files || []).map((file, index) => ({ ...file, keep: index }));
+  const renderFiles = (message = '') => {
+    const count = paymentProofs.length;
+    input.setCustomValidity(count ? '' : 'Add at least one proof file.');
+    card.classList.toggle('has-file', count > 0);
+    card.classList.toggle('has-error', Boolean(message));
+    feedback.textContent = message || (count ? count+' of '+maxProofFiles+' files added' : '');
+    list.innerHTML = paymentProofs.map((file, index) => '<li><span>'+esc(file.name)+'</span>'+
+      '<button type="button" class="btn quiet" data-remove-proof="'+index+'" aria-label="Remove '+esc(file.name)+'">'+icon('Trash')+'Remove</button></li>').join('');
+    input.form.dispatchEvent(new Event('change'));
+  };
   input.addEventListener('change', () => {
-    const file = input.files[0];
-    input.setCustomValidity('');
-    const allowed = file && /\.(pdf|png|jpe?g)$/i.test(file.name) && file.size > 0 && file.size <= 3*1024*1024;
-    card.classList.toggle('has-file', Boolean(allowed));
-    if (file && !allowed) input.setCustomValidity('Choose a PDF, JPG, or PNG up to 3 MB.');
-    card.querySelector('.upload-selected').textContent = file ? allowed
-      ? file.name+' · '+(file.size/1024).toFixed(0)+' KB · Select to replace'
-      : 'Choose a PDF, JPG, or PNG up to 3 MB.' : '';
-    card.classList.toggle('has-error', Boolean(file && !allowed));
+    const selected = Array.from(input.files);
+    input.value = '';
+    if (selected.some(file => !/\.(pdf|png|jpe?g)$/i.test(file.name) || !file.size)) {
+      return renderFiles('Choose a PDF, JPG, or PNG file.');
+    }
+    const combined = [...paymentProofs, ...selected];
+    if (combined.length > maxProofFiles) return renderFiles('Remove a file before adding more than five.');
+    if (combined.reduce((sum, file) => sum + file.size, 0) > maxProofBytes) {
+      return renderFiles('Keep all proof files at 3 MB or less in total.');
+    }
+    paymentProofs = combined;
+    renderFiles();
   });
+  list.addEventListener('click', event => {
+    const button = event.target.closest('[data-remove-proof]');
+    if (!button || input.form.dataset.busy === 'true') return;
+    paymentProofs.splice(Number(button.dataset.removeProof), 1);
+    renderFiles();
+    input.focus();
+  });
+  renderFiles();
 }
 
 function tenantPage() {
@@ -572,7 +645,7 @@ async function go(p){
    if (app.querySelector('[data-busy="true"]')) return;
    p = 'home';
  }
- if (p === 'activate' && user.receipt) p = 'home';
+ if (p === 'activate' && user?.receipt?.status === 'verified') p = 'home';
  if (['home','activate','receipts','review','admin','tenants'].includes(p)) {
    const destination = tenantPage();
    if (isAdminPortal && destination !== 'admin') p = destination;
@@ -590,12 +663,21 @@ async function go(p){
    const { tenant } = await api('tenant?email='+encodeURIComponent(p.slice(7)));
    return showTenant(tenant);
  }
+ if (p.startsWith('email-tenant:') || p.startsWith('delete-tenant:')) {
+   const separator = p.indexOf(':');
+   return showAdminAction(p.slice(0,separator), { email: p.slice(separator+1) });
+ }
+ if (p.startsWith('correction:') || p.startsWith('reject:')) {
+   const [decision, id, submittedAt] = p.split(':');
+   return showAdminAction('review-payment', { id, submittedAt: decodeURIComponent(submittedAt), decision: decision === 'reject' ? 'rejected' : 'correction' });
+ }
  if (p === 'admin-prev' || p === 'admin-next') {
    adminPage += p === 'admin-next' ? 1 : -1;
    p = page;
  } else if (p !== page) adminPage = 1;
  if (p.startsWith('approve:')) {
-   await api('approve',{id:Number(p.split(':')[1])});
+   const [, id, submittedAt] = p.split(':');
+   await api('approve',{id:Number(id),submittedAt:decodeURIComponent(submittedAt) || null});
    toast('Payment approved. The official receipt was emailed to the tenant.');
    app.querySelector('.tenant-sheet')?.close();
    p = page;
@@ -609,6 +691,41 @@ async function go(p){
  }
  if (p === 'consent') await loadAgreement();
  page=p;render();
+}
+
+function showAdminAction(action, fields) {
+  const dialog = document.createElement('dialog');
+  dialog.className = 'admin-action-dialog';
+  let title;
+  let details;
+  let submitText;
+  if (action === 'email-tenant') {
+    title = 'Email tenant';
+    details = '<p>To '+esc(fields.email)+'</p>'+input('Subject','subject','text','maxlength="120"')+
+      '<label>Message<textarea name="message" rows="6" maxlength="5000" required></textarea></label>';
+    submitText = 'Send email';
+  } else if (action === 'delete-tenant') {
+    title = 'Delete tenant';
+    details = '<p>Permanently delete '+esc(fields.email)+' and their payment records? This also signs them out.</p>';
+    submitText = 'Delete tenant';
+  } else {
+    title = fields.decision === 'rejected' ? 'Reject payment' : 'Request correction';
+    details = '<label>Reason for the tenant<textarea name="reason" rows="4" maxlength="1000" required></textarea></label>';
+    submitText = title;
+  }
+  const hidden = Object.entries(fields).map(([key,value]) => '<input type="hidden" name="'+key+'" value="'+esc(value)+'">').join('');
+  dialog.setAttribute('aria-label',title);
+  dialog.innerHTML = '<div class="row"><h2>'+title+'</h2><button type="button" class="btn quiet" data-cancel-action>Cancel</button></div>'+
+    form(action, hidden+details+submit(submitText, action === 'delete-tenant' ? 'data-destructive' : ''));
+  dialog.querySelector('[data-cancel-action]').addEventListener('click', () => {
+    if (!dialog.querySelector('[data-busy="true"]')) dialog.close();
+  });
+  dialog.addEventListener('cancel', event => {
+    if (dialog.querySelector('[data-busy="true"]')) event.preventDefault();
+  });
+  dialog.addEventListener('close', () => dialog.remove());
+  app.append(dialog);
+  dialog.showModal();
 }
 function setButtonLoading(button, loading) {
   if (loading) {
@@ -647,9 +764,37 @@ app.addEventListener('submit',async e=>{
     adminPage = 1;
     return await go(page);
   }
+  if (['email-tenant','delete-tenant','review-payment'].includes(action)) {
+    if (action === 'review-payment') {
+      data.id = Number(data.id);
+      data.submittedAt ||= null;
+    }
+    await api(action,data);
+    f.closest('dialog').close();
+    if (action === 'email-tenant') return toast('Email sent to '+data.email+'.');
+    toast(action === 'delete-tenant' ? 'Tenant deleted.' : 'Review sent to the tenant dashboard.');
+    if (action === 'delete-tenant' && data.email === user.email) {
+      user = null;
+      return await go('login');
+    }
+    adminPage = 1;
+    return await go(page);
+  }
   if(action==='code'){email=data.email.trim().toLowerCase();await api('code',{email,mode,portal:isAdminPortal?'admin':'tenant'});return await go('verify')}
   if(action==='verify'){user=(await api('verify',{email,code:data.code,portal:isAdminPortal?'admin':'tenant'})).user;return await go(tenantPage())}
-  if(action==='activate'){data.amount=data.amount.replace(/,/g,'');if(data.file.size>3*1024*1024)throw Error('Choose a file no larger than 3 MB.');const file=data.file;data.file=await new Promise((resolve,reject)=>{const r=new FileReader();r.onerror=reject;r.onload=()=>resolve(r.result.split(',')[1]);r.readAsDataURL(file)});data.name=file.name;}
+  if (action === 'activate') {
+    data.charges = Object.fromEntries(paymentCharges.map(([key]) => [key, data[key].replace(/,/g,'')]));
+    data.submittedAt = user.rent?.submittedAt ?? null;
+    data.proofs = await Promise.all(paymentProofs.map(entry => {
+      if (entry.keep !== undefined) return { keep: entry.keep };
+      return new Promise((resolve,reject) => {
+        const reader = new FileReader();
+        reader.onerror = reject;
+        reader.onload = () => resolve({ name:entry.name, file:reader.result.split(',')[1] });
+        reader.readAsDataURL(entry);
+      });
+    }));
+  }
   user=(await api(action,data)).user;
   if(action==='activate')toast('Payment submitted for landlord approval.');
   return await go(tenantPage());

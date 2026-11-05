@@ -82,7 +82,7 @@ test('agreement checkbox stays locked until the end and requires explicit confir
     __WAKAJAYE_ICONS__:{},Intl,Date,setTimeout,clearTimeout,
     text:agreementForDate(new Date('2026-11-05T12:00:00Z')).text,
   });
-  const source=readFileSync('src/portal.js','utf8');
+  const source=readFileSync('src/portal.js','utf8').replace(/^import .*;\n/gm,'');
   vm.runInContext(source.slice(0,source.indexOf('email = app.querySelector')),context);
   vm.runInContext("agreementText=text; page='consent'; render();",context);
   assert(consent.disabled);
@@ -101,7 +101,7 @@ test('agreement checkbox stays locked until the end and requires explicit confir
 });
 
 test('admin URL has its own navigation and does not require tenant onboarding', () => {
-  const source=readFileSync('src/portal.js','utf8');
+  const source=readFileSync('src/portal.js','utf8').replace(/^import .*;\n/gm,'');
   for (const portal of ['tenant','admin']) {
     const app={dataset:{portal},innerHTML:'',querySelectorAll:()=>[],querySelector:()=>null,addEventListener(){}};
     const context=vm.createContext({

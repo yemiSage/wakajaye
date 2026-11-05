@@ -336,6 +336,28 @@ button[aria-busy="true"]:disabled { cursor: progress; }
 }
 
 .money-field { position: relative; }
+.payment-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.payment-fields label small { display: inline; font-weight: 400; color: #5f5f5c; }
+.payment-total { display: flex; justify-content: space-between; gap: 12px; font-weight: 600; }
+.action-row { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.tenant-table .action-row { flex-wrap: nowrap; }
+.icon-btn { width: 34px; padding: 0; flex: none; }
+.tag.rejected { color: #9d2929; background: #fdecec; }
+.review-reason { white-space: pre-wrap; overflow-wrap: anywhere; background: #f6f6f4; border-radius: 10px; padding: 12px; margin: 14px 0; }
+.review-reason strong { display: block; }
+.review-actions { margin-top: 20px; }
+.proof-preview { margin-top: 12px; padding: 10px 12px; border: 1px solid #e9e9e6; border-radius: 10px; }
+.proof-preview summary { cursor: pointer; overflow-wrap: anywhere; }
+.proof-list { list-style: none; padding: 0; margin: 0; }
+.proof-list:empty { display: none; }
+.proof-list li { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.proof-list li span { overflow-wrap: anywhere; }
+.admin-action-dialog { width: min(460px, calc(100% - 32px)); max-height: 90svh; overflow: auto; border: 1px solid #e9e9e6; border-radius: 20px; padding: 20px; color: inherit; }
+.admin-action-dialog::backdrop { background: rgb(0 0 0 / 45%); }
+.admin-action-dialog > .row { margin-bottom: 14px; }
+.admin-action-dialog textarea { resize: vertical; }
+.admin-action-dialog [data-destructive] { background: #a32b2b; border-color: #a32b2b; }
+@media (max-width: 400px) { .payment-fields { grid-template-columns: 1fr; } }
 .money-field input { padding-right: 44px; font-variant-numeric: tabular-nums; }
 .money-field > span { position: absolute; right: 14px; top: 50%; transform: translateY(-50%); color: #5f5f5c; pointer-events: none; font-weight: 500; }
 .rent-card-header { display: flex; align-items: center; gap: 12px; margin-bottom: 22px; }
