@@ -6,7 +6,7 @@ const icon = name => icons[name] || '';
 const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const input = (label, name, type = 'text', attrs = '', required = true) =>
   '<label>'+label+'<input name="'+name+'" type="'+type+'" '+attrs+(required?' required':'')+'></label>';
-const btn=(label,action,cls='')=>'<button type="button" class="btn '+cls+'" data-go="'+action+'">'+label+'</button>';
+const btn=(label,action,cls='')=>'<button type="button" class="btn '+cls+'" data-go="'+esc(action)+'">'+label+'</button>';
 const submit=(label,attrs='')=>'<button class="btn primary" '+attrs+'>'+label+'</button>';
 const form=(name,contents)=>'<form class="stack" data-form="'+name+'">'+contents+'<p class="error" role="alert" hidden></p></form>';
 let user=null,email='',mode='create',page='login';
@@ -32,7 +32,17 @@ const money=v=>new Intl.NumberFormat('en-NG',{style:'currency',currency:'NGN'}).
 function toast(message){notice.textContent=message;notice.hidden=false;clearTimeout(toast.timer);toast.timer=setTimeout(()=>notice.hidden=true,5500)}
 async function api(path,data){const r=await fetch('/api/'+path,data===undefined?{}:{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});const b=await r.json();if(!r.ok)throw Error(b.error||'Something went wrong.');return b}
 function auth(title,desc,body,step=''){return '<main class="auth"><section class="auth-card" data-screen="'+esc(page)+'" aria-labelledby="auth-title"><header>'+logo+'</header>'+(step?'<p class="eyebrow">'+step+'</p>':'')+'<h1 id="auth-title">'+title+'</h1><p class="intro">'+desc+'</p>'+body+'</section></main>'}
-function shell(title,body){return '<div class="frame"><div class="shell"><aside class="sidebar"><div class="brand">'+logo+'</div><nav class="nav" aria-label="'+(isAdminPortal?'Admin portal':'Tenant portal')+'">'+(isAdminPortal?[['Admin','admin'],['Tenants','tenants'],['Review','review']]:[['Home','home'],['Receipts','receipts']]).map(([n,p])=>btn(icon(n)+n,p,'quiet '+(page===p?'active':'')).replace('data-go=',(page===p?'aria-current="page" ':'')+'data-go=')).join('')+'</nav><footer><div class="account" title="'+esc(user.email)+'">'+esc(user.email)+'</div>'+btn(icon('Logout')+'Sign out','logout','quiet')+'</footer></aside><main class="main'+(page==='review'?' receipt-review':'')+'"><header class="bar">'+title+'</header>'+body+'</main></div></div>'}
+function shell(title,body) {
+ const navigationPage = page === 'activate' ? 'home' : page;
+ const items = isAdminPortal ? [['Admin','admin'],['Tenants','tenants'],['Review','review']] : [['Home','home'],['Receipts','receipts']];
+ const navigation = items.map(([label,destination]) =>
+   btn(icon(label)+'<span>'+label+'</span>',destination,'quiet '+(navigationPage===destination?'active':''))
+     .replace('data-go=',(navigationPage===destination?'aria-current="page" ':'')+'data-go=')).join('');
+ return '<div class="frame"><div class="shell '+(isAdminPortal?'admin-shell':'tenant-shell')+'"><aside class="sidebar"><div class="brand">'+logo+
+   '</div><nav class="nav" aria-label="'+(isAdminPortal?'Admin portal':'Tenant portal')+'">'+navigation+
+   '</nav><footer><div class="account" title="'+esc(user.email)+'">'+esc(user.email)+'</div>'+btn(icon('Logout')+'Sign out','logout','quiet')+
+   '</footer></aside><main class="main'+(page==='review'?' receipt-review':'')+'"><header class="bar">'+title+'</header>'+body+'</main></div></div>';
+}
 function content(title,desc,body,narrow=false){return '<section class="content '+(narrow?'narrow':'')+'"><h1>'+title+'</h1><p>'+desc+'</p>'+body+'</section>'}
 function render(){
  if (page === 'agreement-error') {
@@ -98,8 +108,8 @@ function render(){
    const message = active ? 'Your rent is active.' : receipt
      ? 'Your payment is pending landlord approval.'
      : 'Submit your payment details to activate your rent.';
-   const rentCard = '<article class="card"><div class="row"><span class="mark">'+icon('Home')+
-     '</span><span class="tag '+(active?'good':'')+'">'+status+'</span></div><h2>Your rent</h2><p>'+message+'</p>'+
+   const rentCard = '<article class="card rent-card"><div class="rent-card-header"><span class="mark">'+icon('Home')+
+     '</span><div class="rent-card-summary"><h2>Your rent</h2><p>'+message+'</p></div><span class="tag '+(active?'good':'')+'">'+status+'</span></div>'+
      (receipt ? '<dl class="details"><div><dt>Amount paid</dt><dd>'+money(rent.amount)+'</dd></div></dl>'+(active?'':btn('Refresh status','refresh-rent'))
        : btn('Activate my rent', 'activate', 'primary'))+'</article>';
    const receiptCard = '<article class="card"><h2>Payment receipt</h2><p>'+
@@ -113,8 +123,7 @@ function render(){
      app.insertAdjacentHTML('beforeend', '<dialog class="rent-sheet" aria-labelledby="rent-sheet-title">'+
        '<div class="row"><h2 id="rent-sheet-title">Activate my rent</h2>'+btn('Close', 'close-sheet', 'quiet')+'</div>'+
        '<p>Enter the amount you paid and attach your payment receipt.</p>'+
-       form('activate', input('Amount paid (₦)', 'amount', 'number',
-         'min="0.01" step="0.01" max="1000000000" value="'+esc(rent?.amount)+'"')+
+       form('activate', '<label>Amount paid<div class="money-field"><input name="amount" type="text" inputmode="decimal" autocomplete="off" placeholder="0.00" aria-label="Amount paid in naira" required value="'+esc(rent?.amount)+'"><span aria-hidden="true">₦</span></div></label>'+
          uploadField()+submit('Save'))+'</dialog>');
      const dialog = app.querySelector('dialog');
      dialog.addEventListener('cancel', event => {
@@ -126,6 +135,7 @@ function render(){
  }
  if (['admin','tenants','review'].includes(page)) renderAdmin();
  initializeUpload();
+ initializeAmount();
  app.querySelectorAll('select').forEach(enhanceSelect);
  app.querySelectorAll('input[type="date"]').forEach(enhanceDate);
  const activeForm = app.querySelector('form[data-form]');
@@ -473,7 +483,7 @@ function showTenant(tenant) {
     '<h3>Payment</h3>'+rows([['Amount',tenant.rent?money(tenant.rent.amount):''],['Submitted',tenant.rent?.submittedAt?new Date(tenant.rent.submittedAt).toLocaleString('en-GB',{timeZone:'Africa/Lagos'}):'']])+
     (tenant.receipt?'<a class="btn" href="/api/file?id='+tenant.receipt.id+'">'+icon('Download')+'Download proof</a>'+
       '<div class="receipt-preview">'+(tenant.receipt.mime==='application/pdf'
-        ?'<iframe title="Uploaded payment receipt" src="/api/file?id='+tenant.receipt.id+'&preview=1"></iframe>'
+        ?'<iframe sandbox="" referrerpolicy="no-referrer" title="Uploaded payment receipt" src="/api/file?id='+tenant.receipt.id+'&preview=1"></iframe>'
         :'<img alt="Uploaded payment receipt" src="/api/file?id='+tenant.receipt.id+'&preview=1">')+'</div>'+
       (tenant.status==='pending'?btn(icon('Check')+'Approve payment and issue receipt','approve:'+tenant.receipt.id,'primary approve-payment'):'')
       :'<p>No payment receipt submitted.</p>');
@@ -491,6 +501,41 @@ function uploadField() {
     '<span class="upload-title">Choose payment receipt</span>'+
     '<span class="upload-description">PDF, JPG, or PNG · Up to 3 MB</span>'+
     '<span class="upload-selected" aria-live="polite"></span></label>';
+}
+
+function formatAmount(value) {
+  const normalized = value.replace(/,/g,'');
+  if (!/^\d*(\.\d{0,2})?$/.test(normalized)) return null;
+  const [integer, decimals] = normalized.split('.');
+  const grouped = (integer || (decimals === undefined ? '' : '0')).replace(/^0+(?=\d)/,'').replace(/\B(?=(\d{3})+(?!\d))/g,',');
+  return grouped + (decimals === undefined ? '' : '.'+decimals);
+}
+
+function initializeAmount() {
+  const input = app.querySelector('.money-field input');
+  if (!input) return;
+  let previous = formatAmount(input.value) || '';
+  input.value = previous;
+  const validate = () => {
+    const raw = input.value.replace(/,/g,'');
+    const valid = /^\d+(\.\d{1,2})?$/.test(raw) && Number(raw)>=0.01 && Number(raw)<=1e9;
+    input.setCustomValidity(valid ? '' : 'Enter an amount between ₦0.01 and ₦1,000,000,000.');
+  };
+  input.addEventListener('input', () => {
+    const before = input.value.slice(0,input.selectionStart).replace(/,/g,'').length + (input.value.startsWith('.') ? 1 : 0);
+    const formatted = formatAmount(input.value);
+    input.value = formatted === null ? previous : formatted;
+    previous = input.value;
+    let index = 0;
+    let digits = 0;
+    while (index<input.value.length && digits<before) {
+      if (input.value[index]!==',') digits++;
+      index++;
+    }
+    input.setSelectionRange(index,index);
+    validate();
+  });
+  validate();
 }
 
 function initializeUpload() {
@@ -530,11 +575,11 @@ async function go(p){
    if (!isAdminPortal && destination !== 'home') p = destination;
  }
  if (p === 'refresh-rent') {
-   ({ user } = await api('session'));
+   ({ user } = await api('session'+(isAdminPortal?'?portal=admin':'')));
    p = tenantPage();
  }
  if(p==='toggle' && !isAdminPortal){mode=mode==='create'?'signin':'create';return render()}
- if(p==='logout'){await api('logout',{});user=null;email='';adminRecords=null;p='login'}
+ if(p==='logout'){await api('logout',{portal:isAdminPortal?'admin':'tenant'});user=null;email='';adminRecords=null;p='login'}
  if(p==='resend'){await api('code',{email,mode,portal:isAdminPortal?'admin':'tenant'});return toast('A new code was requested.')}
  if (p.startsWith('tenant:')) {
    const { tenant } = await api('tenant?email='+encodeURIComponent(p.slice(7)));
@@ -599,7 +644,7 @@ app.addEventListener('submit',async e=>{
   }
   if(action==='code'){email=data.email.trim().toLowerCase();await api('code',{email,mode,portal:isAdminPortal?'admin':'tenant'});return await go('verify')}
   if(action==='verify'){user=(await api('verify',{email,code:data.code,portal:isAdminPortal?'admin':'tenant'})).user;return await go(tenantPage())}
-  if(action==='activate'){if(data.file.size>3*1024*1024)throw Error('Choose a file no larger than 3 MB.');const file=data.file;data.file=await new Promise((resolve,reject)=>{const r=new FileReader();r.onerror=reject;r.onload=()=>resolve(r.result.split(',')[1]);r.readAsDataURL(file)});data.name=file.name;}
+  if(action==='activate'){data.amount=data.amount.replace(/,/g,'');if(data.file.size>3*1024*1024)throw Error('Choose a file no larger than 3 MB.');const file=data.file;data.file=await new Promise((resolve,reject)=>{const r=new FileReader();r.onerror=reject;r.onload=()=>resolve(r.result.split(',')[1]);r.readAsDataURL(file)});data.name=file.name;}
   user=(await api(action,data)).user;
   if(action==='activate')toast('Payment submitted for landlord approval.');
   return await go(tenantPage());
@@ -609,7 +654,7 @@ email = app.querySelector('[name="email"]')?.value || '';
 render();
 (async () => {
  try {
-   ({user} = await api('session'));
+   ({user} = await api('session'+(isAdminPortal?'?portal=admin':'')));
    if (!user) return;
    const destination = tenantPage();
    if (destination === 'admin') {

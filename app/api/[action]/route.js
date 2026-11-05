@@ -1,6 +1,7 @@
-import { createHash, randomBytes, randomInt, timingSafeEqual } from 'node:crypto';
+import { randomBytes, randomInt } from 'node:crypto';
 import { NextResponse } from 'next/server';
 import pg from 'pg';
+import { ADMIN_EMAIL, adminActions, readActions, writeActions, usesAdminSession, sessionDigest, otpDigest, matchesOtp, consumeAuthLimit, adminSessionAge, tenantSessionAge } from '../../../lib/security.mjs';
 import { adminData, tenantDetails } from '../../../lib/admin.mjs';
 import supabaseCA from './supabase-ca';
 import { agreementForDate, agreementVersion } from '../../../lib/agreement.mjs';
@@ -8,7 +9,6 @@ import { agreementForDate, agreementVersion } from '../../../lib/agreement.mjs';
 export const runtime = 'nodejs';
 
 const maxFileSize = 3 * 1024 ** 2;
-const sessionAge = 604800;
 let pool;
 
 class RequestError extends Error {
@@ -41,10 +41,6 @@ function dateField(data, name) {
     throw new RequestError('Enter a valid date.');
   }
   return value;
-}
-
-function digest(value) {
-  return createHash('sha256').update(value).digest('hex');
 }
 
 function json(data, status = 200) {
@@ -116,13 +112,15 @@ async function read(db, request, action, email, admin) {
       'Content-Type': file.mime,
       'Content-Disposition': (request.nextUrl.searchParams.get('preview') === '1' ? 'inline' : 'attachment') + "; filename*=UTF-8''" + name,
       'X-Content-Type-Options': 'nosniff',
+      'Content-Security-Policy': "sandbox; default-src 'none'; frame-ancestors 'self'",
+      'X-Frame-Options': 'SAMEORIGIN',
       'Cache-Control': 'no-store',
     } });
   }
   throw new RequestError('Not found.', 404);
 }
 
-async function mutate(db, action, data, email, admin, token, secure) {
+async function mutate(db, action, data, email, admin, token, secure, adminScope = false) {
   const now = Date.now() / 1000;
   if (action === 'code') {
     const address = emailField(data);
@@ -135,7 +133,7 @@ async function mutate(db, action, data, email, admin, token, secure) {
     const salt = randomBytes(16).toString('hex');
     await db.query(
       'INSERT INTO codes VALUES($1,$2,$3,0,$4) ON CONFLICT (email) DO UPDATE SET digest=excluded.digest, issued=excluded.issued, attempts=0, mode=excluded.mode',
-      [address, salt + ':' + digest(salt + code), now, codeMode],
+      [address, otpDigest(address, codeMode, salt, code), now, codeMode],
     );
     await sendMail(address, 'Your Wakajaye verification code', 'Your Wakajaye code is ' + code + '. It expires in 10 minutes.');
     return json({ ok: true });
@@ -147,8 +145,8 @@ async function mutate(db, action, data, email, admin, token, secure) {
     if (data.portal === 'admin' && address !== admin) throw new RequestError('Admin access required.', 403);
     const { rows: [record] } = await db.query('SELECT * FROM codes WHERE email=$1', [address]);
     if (!record || now - record.issued > 600 || record.attempts >= 5) throw new RequestError('Request a fresh code.');
-    const [salt, expected] = record.digest.split(':');
-    if (!timingSafeEqual(Buffer.from(digest(salt + code)), Buffer.from(expected))) {
+    const isAdminLogin = data.portal === 'admin';
+    if (!matchesOtp(record, address, code, isAdminLogin)) {
       await db.query('UPDATE codes SET attempts=attempts+1 WHERE email=$1', [address]);
       return json({ error: 'That code does not match.' }, 400);
     }
@@ -159,9 +157,10 @@ async function mutate(db, action, data, email, admin, token, secure) {
     await db.query('INSERT INTO tenants(email) VALUES($1) ON CONFLICT (email) DO NOTHING', [address]);
     await db.query('DELETE FROM sessions WHERE token=$1 OR expires<$2', [token, now]);
     const session = randomBytes(32).toString('base64url');
-    await db.query('INSERT INTO sessions VALUES($1,$2,$3)', [digest(session), address, now + sessionAge]);
-    const response = json({ user: await loadUser(db, address, admin) });
-    response.cookies.set('wj', session, { httpOnly: true, sameSite: 'strict', path: '/', secure, maxAge: sessionAge });
+    const sessionAge = isAdminLogin ? adminSessionAge : tenantSessionAge;
+    await db.query('INSERT INTO sessions VALUES($1,$2,$3)', [sessionDigest(session, isAdminLogin), address, now + sessionAge]);
+    const response = json({ user: await loadUser(db, address, isAdminLogin ? admin : undefined) });
+    response.cookies.set(isAdminLogin ? 'wj_admin' : 'wj', session, { httpOnly: true, sameSite: 'strict', path: '/', secure, maxAge: sessionAge });
     return response;
   }
 
@@ -169,7 +168,7 @@ async function mutate(db, action, data, email, admin, token, secure) {
   if (action === 'logout') {
     await db.query('DELETE FROM sessions WHERE token=$1', [token]);
     const response = json({ ok: true });
-    response.cookies.set('wj', '', { httpOnly: true, sameSite: 'strict', path: '/', secure, maxAge: 0 });
+    response.cookies.set(adminScope ? 'wj_admin' : 'wj', '', { httpOnly: true, sameSite: 'strict', path: '/', secure, maxAge: 0 });
     return response;
   }
 
@@ -271,26 +270,22 @@ async function mutate(db, action, data, email, admin, token, secure) {
     default:
       throw new RequestError('Not found.', 404);
   }
-  return json({ user: await loadUser(db, email, admin) });
+  return json({ user: await loadUser(db, email, adminScope ? admin : undefined) });
 }
 
 async function handle(request, { params }) {
   let db;
   try {
     const { action } = await params;
-    const rawToken = request.cookies.get('wj')?.value;
-    const token = rawToken ? digest(rawToken) : '';
     const write = request.method === 'POST';
-    if (!write && action === 'session' && !token) return json({ user: null });
-    if (!write && ['admin', 'tenant', 'queue', 'file'].includes(action) && !token) {
-      throw new RequestError('Admin access required.', 403);
-    }
+    if (!(write ? writeActions : readActions).has(action)) throw new RequestError('Not found.', 404);
 
     let data;
     const protocol = request.headers.get('x-forwarded-proto') ?? request.nextUrl.protocol.slice(0, -1);
     const host = request.headers.get('host') ?? request.nextUrl.host;
     if (write) {
-      if (request.headers.get('origin') !== protocol + '://' + host ||
+      if (request.headers.get('sec-fetch-site') === 'cross-site' ||
+          request.headers.get('origin') !== protocol + '://' + host ||
           request.headers.get('content-type')?.split(';')[0] !== 'application/json') {
         throw new RequestError('Request origin is not allowed.', 403);
       }
@@ -318,19 +313,49 @@ async function handle(request, { params }) {
       if (!data || typeof data !== 'object' || Array.isArray(data)) throw new RequestError('Invalid request.');
     }
 
+    const portal = write ? data.portal : request.nextUrl.searchParams.get('portal');
+    const adminScope = usesAdminSession(action, portal);
+    const rawToken = request.cookies.get(adminScope ? 'wj_admin' : 'wj')?.value;
+    const validToken = typeof rawToken === 'string' && /^[A-Za-z0-9_-]{43}$/.test(rawToken);
+    const token = validToken ? sessionDigest(rawToken, adminScope) : '';
+    if (!write && action === 'session' && !token) return json({ user: null });
+    if ((adminActions.has(action) || (write && !['code','verify'].includes(action))) && !token) {
+      throw new RequestError(adminScope ? 'Admin sign-in required.' : 'Sign in to continue.', adminScope ? 403 : 401);
+    }
+    let address;
+    if (write && ['code','verify'].includes(action)) {
+      address = emailField(data);
+      if (portal === 'admin' && address !== ADMIN_EMAIL) throw new RequestError('Admin access required.', 403);
+      if (action === 'verify' && !/^\d{6}$/.test(field(data, 'code', 6))) throw new RequestError('Enter a six-digit code.');
+    }
+
     const connectionString = process.env.SUPABASE_DB_URL;
     if (!connectionString) throw new RequestError('The tenant database is unavailable.', 503);
     pool ??= new pg.Pool({ connectionString, ssl: { ca: supabaseCA, rejectUnauthorized: true }, connectionTimeoutMillis: 5000, max: 4 });
     db = await pool.connect();
     await db.query('BEGIN');
     await db.query('SET LOCAL search_path TO wakajaye, pg_catalog');
-    if (write) await db.query('SELECT pg_advisory_xact_lock(73201300)');
+    await db.query("SET LOCAL statement_timeout = '10s'");
+    await db.query("SET LOCAL lock_timeout = '3s'");
+    if (address) {
+      const ip = process.env.VERCEL ? request.headers.get('x-vercel-forwarded-for') || request.headers.get('x-forwarded-for') || 'unknown' : 'local';
+      const allowed = await consumeAuthLimit(db, action, ip, address, Date.now()/1000);
+      // Commit rate counters even when the later request is invalid or email delivery fails.
+      await db.query('COMMIT');
+      if (!allowed) throw new RequestError('Too many attempts. Please try again in 15 minutes.', 429);
+      await db.query('BEGIN');
+      await db.query('SET LOCAL search_path TO wakajaye, pg_catalog');
+      await db.query("SET LOCAL statement_timeout = '10s'");
+      await db.query("SET LOCAL lock_timeout = '3s'");
+    }
     const { rows: [session] } = await db.query('SELECT email FROM sessions WHERE token=$1 AND expires>$2', [token, Date.now() / 1000]);
     const email = session?.email;
-    const admin = process.env.WAKAJAYE_ADMIN_EMAIL?.trim().toLowerCase();
+    const admin = ADMIN_EMAIL;
+    if (adminScope && action !== 'verify' && email !== admin) throw new RequestError('Admin sign-in required.', 403);
+    if (write) await db.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))', [address || email || 'anonymous']);
     const response = write
-      ? await mutate(db, action, data, email, admin, token, protocol === 'https')
-      : await read(db, request, action, email, admin);
+      ? await mutate(db, action, data, email, admin, token, protocol === 'https', adminScope)
+      : await read(db, request, action, email, adminScope ? admin : undefined);
     await db.query('COMMIT');
     return response;
   } catch (error) {
