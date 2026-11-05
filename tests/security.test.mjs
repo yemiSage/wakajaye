@@ -305,8 +305,8 @@ test('rent activation saves exactly the entered amount and retains receipt lines
   assert(committed);
   assert.equal(result.user.receipt.status,'pending');
   assert.equal(result.user.rent.amount,150000);
-  assert.deepEqual(rent.charges,{houseRent:150000,electricity:42000,sanitation:12000});
-  assert.deepEqual(charges.paymentLines(rent),[['House rent',150000],['Electricity (light)',42000],['Sanitation',12000]]);
+  assert.deepEqual(rent.charges,{houseRent:200000,electricity:42000,sanitation:12000});
+  assert.deepEqual(charges.paymentLines(rent),[['House rent',200000],['Electricity (light)',42000],['Sanitation',12000]]);
   assert.deepEqual(receipt.bytes,bytes);
   const tooLarge = Buffer.concat([bytes,Buffer.from([0])]);
   assert.throws(()=>context.decodeProof({name:'large.jpg',file:tooLarge.toString('base64')}),/compressed to 1 MB/);
@@ -325,15 +325,32 @@ test('activation hides fixed charge fields and receipts have no edit payment act
   vm.runInContext(source.slice(0,source.indexOf('email = app.querySelector')),context);
   const fields = context.paymentFields({amount:254000,charges:{houseRent:200000}});
   assert.match(fields,/name="amount"/);
-  assert.match(fields,/Total amount paid/);
+  assert.match(fields,/House rent/);
   assert.match(fields,/value="254,000"/);
   assert.doesNotMatch(fields,/electricity|sanitation/i);
-  assert.doesNotMatch(fields,/<output|data-payment-total/);
-  vm.runInContext("user={email:'test@example.com',first:'Test',rent:{amount:254000,review:{reason:'Please replace your proof.'}},receipt:{status:'correction'}};page='receipts';render();",context);
+  assert.match(fields,/<output data-payment-total>₦254,000.00/);
+  assert.equal((fields.match(/<input /g) || []).length,1);
+  vm.runInContext("user={email:'test@example.com',first:'Test',rent:{amount:254000,charges:{houseRent:200000,electricity:42000,sanitation:12000},review:{reason:'Please replace your proof.'}},receipt:{status:'correction'}};page='receipts';render();",context);
   assert.match(app.innerHTML,/Please replace your proof/);
   assert.doesNotMatch(app.innerHTML,/data-go="activate"|Edit payment|Edit and resubmit/);
   vm.runInContext("page='home';render();",context);
   assert.match(app.innerHTML,/data-go="activate"/);
+  assert.doesNotMatch(app.innerHTML,/Electricity|Sanitation/);
+  const events = {};
+  const total = {};
+  const amount = {value:'254,000',required:true,selectionStart:7,
+    setCustomValidity(message){this.error=message;},setSelectionRange(){},
+    addEventListener:(name,handler)=>{events[name]=handler;}};
+  app.querySelectorAll = selector => selector === '.money-field input' ? [amount] : [];
+  app.querySelector = selector => selector === '[data-payment-total]' ? total : null;
+  context.initializeAmount();
+  assert.equal(total.value,'₦254,000.00');
+  amount.value = '217500.25';
+  amount.selectionStart = amount.value.length;
+  events.input();
+  assert.equal(amount.value,'217,500.25');
+  assert.equal(total.value,'₦217,500.25');
+  assert.equal(amount.error,'');
 });
 
 test('review reasons survive reads and resubmission replaces selected proofs without changing the receipt id',async()=>{
@@ -369,7 +386,7 @@ test('review reasons survive reads and resubmission replaces selected proofs wit
   await submit({...payment,proofs:[upload('first.pdf',initial),upload('retain.pdf',keep)]});
   const first = JSON.parse(rent);
   assert.equal(first.amount,200000.01);
-  assert.deepEqual(first.charges,{houseRent:200000.01,electricity:42000,sanitation:12000});
+  assert.deepEqual(first.charges,{houseRent:200000,electricity:42000,sanitation:12000});
   await context.mutate(db,'review-payment',{id:7,submittedAt:first.submittedAt,decision:'correction',reason:'Upload a clearer first page.'},address,address,'',true,true);
   assert.equal((await context.loadUser(db,tenant,address)).receipt.status,'correction');
   await assert.rejects(submit({...payment,proofs:[{keep:1}],submittedAt:'old'}),/submission has changed/);

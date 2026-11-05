@@ -1,4 +1,4 @@
-import { amountInKobo, maxPaymentKobo, paymentLines } from '../lib/payment-charges.mjs';
+import { amountInKobo, maxPaymentKobo } from '../lib/payment-charges.mjs';
 import { maxProofFiles } from '../lib/payment-proof.mjs';
 import { prepareProofFiles } from '../lib/image-compression.mjs';
 
@@ -131,8 +131,7 @@ function render(){
    const editLabel = status === 'correction' || status === 'rejected' ? 'Edit and resubmit' : 'Edit payment';
    const rentCard = '<article class="card rent-card"><div class="rent-card-header"><span class="mark">'+icon('Home')+
      '</span><div class="rent-card-summary"><h2>Your rent</h2><p>'+message+'</p></div>'+statusTag(status)+'</div>'+reviewReason+
-     (receipt ? '<dl class="details">'+(rent.charges ? paymentLines(rent).map(([label,amount]) =>
-       '<div><dt>'+label+'</dt><dd>'+money(amount)+'</dd></div>').join('') : '')+
+     (receipt ? '<dl class="details">'+
        '<div><dt>Total paid</dt><dd>'+money(rent.amount)+'</dd></div></dl>'+(active?'':'<div class="action-row">'+btn(editLabel,'activate','primary')+btn('Refresh status','refresh-rent')+'</div>')
        : btn('Activate my rent', 'activate', 'primary'))+'</article>';
    const issuedDate = rent?.approvedAt && new Date(rent.approvedAt).toLocaleDateString('en-GB', {
@@ -150,7 +149,7 @@ function render(){
    if (page === 'activate') {
      app.insertAdjacentHTML('beforeend', '<dialog class="rent-sheet" aria-labelledby="rent-sheet-title">'+
        '<div class="row"><h2 id="rent-sheet-title">'+(receipt ? 'Edit payment' : 'Activate my rent')+'</h2>'+btn('Close', 'close-sheet', 'quiet')+'</div>'+
-       '<p>Enter the total amount you paid and attach your proof of payment.</p>'+
+       '<p>Enter your house rent and attach your proof of payment.</p>'+
        reviewReason+form('activate', paymentFields(rent)+
          uploadField()+submit(receipt ? 'Resubmit for review' : 'Save'))+'</dialog>');
      const dialog = app.querySelector('dialog');
@@ -526,7 +525,6 @@ function showTenant(tenant) {
     '<h3>Guarantor</h3>'+(guarantor?rows([['Name',guarantor.name],['Relationship',guarantor.relationship],['Phone',guarantor.phone],['Email',guarantor.email]]):'<p>Not submitted.</p>')+
     '<h3>Agreement</h3>'+rows([['Onboarding',tenant.onboardingComplete?'Complete':'Incomplete'],['Accepted',profile.agreement?.acceptedAt?new Date(profile.agreement.acceptedAt).toLocaleString('en-GB',{timeZone:'Africa/Lagos'}):''],['Version',profile.agreement?.version],['Agreement date',profile.agreement?.date]])+
     '<h3>Payment</h3>'+rows([
-      ...(tenant.rent?.charges ? paymentLines(tenant.rent).map(([label,amount]) => [label,money(amount)]) : []),
       ['Total paid',tenant.rent?money(tenant.rent.amount):''],
       ['Submitted',tenant.rent?.submittedAt?new Date(tenant.rent.submittedAt).toLocaleString('en-GB',{timeZone:'Africa/Lagos'}):''],
     ])+
@@ -554,10 +552,10 @@ function uploadField() {
 
 function paymentFields(rent) {
   const value = rent?.amount ?? rent?.charges?.houseRent;
-  return '<div class="payment-fields"><label><span>Total amount paid</span>'+
+  return '<div class="payment-fields"><label><span>House rent</span>'+
     '<div class="money-field"><input name="amount" type="text" inputmode="decimal" autocomplete="off" placeholder="0.00"'+
     ' value="'+esc(value > 0 ? formatAmount(String(value)) : '')+'" required><span aria-hidden="true">₦</span></div></label>'+
-    '</div>';
+    '</div><div class="payment-total"><span>Total paid</span><output data-payment-total>'+money(value > 0 ? value : 0)+'</output></div>';
 }
 
 function formatAmount(value) {
@@ -571,12 +569,14 @@ function formatAmount(value) {
 function initializeAmount() {
   const inputs = app.querySelectorAll('.money-field input');
   if (!inputs.length) return;
+  const total = app.querySelector('[data-payment-total]');
   const validate = () => {
     for (const input of inputs) {
       const raw = input.value.replace(/,/g,'');
       const kobo = raw === '' && !input.required ? 0 : amountInKobo(raw);
       const valid = kobo !== null && kobo >= (input.required ? 1 : 0) && kobo <= maxPaymentKobo;
       input.setCustomValidity(valid ? '' : 'Enter a valid payment amount.');
+      total.value = money(valid ? kobo / 100 : 0);
     }
   };
   for (const input of inputs) {

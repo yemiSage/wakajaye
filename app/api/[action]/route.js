@@ -359,7 +359,7 @@ async function mutate(db, action, data, email, admin, token, secure, adminScope 
       if (totalKobo === null || totalKobo < 1 || totalKobo > maxPaymentKobo) {
         throw new RequestError('Enter a valid payment amount.');
       }
-      charges = { houseRent: totalKobo / 100, ...fixedPaymentCharges };
+      charges = { ...fixedPaymentCharges };
       const files = await readProofSubmission(db, data, current);
       const proofs = files.map(({ name, mime, size }) => ({ name, mime, size }));
       const rent = { amount: totalKobo / 100, ...(charges ? { charges } : {}), proofs, submittedAt: new Date().toISOString() };

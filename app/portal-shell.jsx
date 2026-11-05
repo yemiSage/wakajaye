@@ -1,8 +1,9 @@
 import Script from 'next/script';
+import { portalScript } from '../lib/portal-asset.mjs';
 
 export default function PortalShell({ adminMode = false }) {
   return <>
-    <link rel="preload" href="/portal.js" as="script" />
+    <link rel="preload" href={portalScript} as="script" />
     <div id="app" data-portal={adminMode ? 'admin' : 'tenant'}>
       <main className="auth">
         <section className="auth-card" data-screen="login" aria-labelledby="auth-title">
@@ -19,6 +20,6 @@ export default function PortalShell({ adminMode = false }) {
       </main>
     </div>
     <div id="notice" role="status" hidden />
-    <Script src="/portal.js" strategy="afterInteractive" />
+    <Script src={portalScript} strategy="afterInteractive" />
   </>;
 }
