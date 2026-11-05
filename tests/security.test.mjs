@@ -4,6 +4,7 @@ import { readFileSync } from 'node:fs';
 import { randomBytes, randomInt } from 'node:crypto';
 import vm from 'node:vm';
 import * as security from '../lib/security.mjs';
+import { receiptPdf } from '../lib/receipt-pdf.mjs';
 
 process.env.AUTH_SECRET = 'test-only-secret-never-used-in-production';
 const address = security.ADMIN_EMAIL;
@@ -65,6 +66,7 @@ test('request guards reject CSRF, malformed bodies and tenant-cookie admin acces
     ['admin',{},403],
     ['admin',{cookies:{wj:'a'.repeat(43)}},403],
     ['file?id=1',{cookies:{wj:'a'.repeat(43)}},403],
+    ['receipt',{cookies:{wj_admin:'a'.repeat(43)}},401],
     ['approve',{method:'POST',body:{id:1},cookies:{wj:'a'.repeat(43)}},403],
     ['profile',{method:'POST',body:{}},401],
     ['code',{method:'POST',body:{email:address,mode:'signin'},origin:'https://attacker.example'},403],
@@ -80,6 +82,61 @@ test('request guards reject CSRF, malformed bodies and tenant-cookie admin acces
     assert.equal((await call(context,action,options)).status,status,action+' '+JSON.stringify(options));
   }
   assert.deepEqual(await (await call(context,'session?portal=admin',{cookies:{wj:'a'.repeat(43)}})).json(),{user:null});
+});
+
+test('approval emails the same receipt the tenant can download and keeps it pending if mail fails', async () => {
+  const tenant = 'tenant@example.com';
+  const profile = JSON.stringify({first:'Sample',last:'Tenant'});
+  let rent = JSON.stringify({amount:250000});
+  let status = 'pending';
+  let mail;
+  let mailStatus = 502;
+  const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jHuoAAAAASUVORK5CYII=', 'base64');
+  const context = routeContext({
+    process: {env:{BREVO_API_KEY:'fake-key',BREVO_FROM_EMAIL:'sender@example.com'}},
+    fetch: async (_url, options) => {
+      mail = JSON.parse(options.body);
+      return {status:mailStatus};
+    },
+  });
+  context.officialReceipt = async (id, user, payment) => ({
+    name: `wakajaye-receipt-WJ-00000${id}.pdf`,
+    type: 'application/pdf',
+    bytes: await receiptPdf({number:`WJ-00000${id}`,name:payment.issuedTo,email:user.email,rent:payment}, png),
+  });
+  const db = {async query(sql, params) {
+    if (sql.startsWith('SELECT t.profile')) {
+      return {rows:[params[0] === tenant ? {profile,rent,receipt_status:status,receipt_id:7} : {}]};
+    }
+    if (sql.startsWith('SELECT id, email FROM receipts')) {
+      return {rows:status === 'pending' && params[0] === 7 ? [{id:7,email:tenant}] : []};
+    }
+    if (sql.startsWith('SELECT r.id,t.profile,t.rent')) {
+      assert.match(sql,/r\.email=\$1 AND r\.status='verified'/);
+      return {rows:params[0] === tenant && status === 'verified' ? [{id:7,profile,rent}] : []};
+    }
+    if (sql.startsWith('UPDATE tenants SET rent')) { assert.equal(params[1],tenant); rent = params[0]; return {}; }
+    if (sql.startsWith('UPDATE receipts SET status')) { assert.equal(params[0],7); status = 'verified'; return {}; }
+    assert.fail('Unexpected query: '+sql);
+  }};
+  const download = request('receipt?email='+encodeURIComponent(tenant)+'&id=7');
+  await assert.rejects(context.read(db,download,'receipt',tenant),/No issued receipt/);
+  await assert.rejects(context.mutate(db,'approve',{id:7},address,address,'',true,true),/Email delivery failed/);
+  assert.equal(status,'pending');
+  assert.deepEqual(JSON.parse(rent),{amount:250000});
+  mailStatus = 201;
+  await context.mutate(db,'approve',{id:7},address,address,'',true,true);
+  assert.equal(status,'verified');
+  assert.equal(mail.to[0].email,tenant);
+  assert.equal(mail.attachment[0].name,'wakajaye-receipt-WJ-000007.pdf');
+  await assert.rejects(context.read(db,download,'receipt','another@example.com'),/No issued receipt/);
+  const response = await context.read(db,download,'receipt',tenant);
+  assert.equal(response.headers.get('cache-control'),'private, no-store');
+  assert.equal(response.headers.get('content-type'),'application/pdf');
+  const bytes = Buffer.from(await response.arrayBuffer());
+  assert.match(bytes.subarray(0,8).toString(),/^%PDF-/);
+  assert.deepEqual(bytes,Buffer.from(mail.attachment[0].content,'base64'));
+  await assert.rejects(context.mutate(db,'approve',{id:7},address,address,'',true,true),/no longer waiting/);
 });
 
 test('admin OTP creates a short-lived separate cookie, is single-use and expires',async()=>{

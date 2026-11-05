@@ -23,6 +23,8 @@ Trap by Aayush Mayank is bundled locally. Source: https://befonts.com/trap-sans-
 
 Import this repository on Vercel with the Next.js framework preset and the repository root as the root directory. Set the three required server variables above (`SUPABASE_DB_URL`, `BREVO_API_KEY`, `BREVO_FROM_EMAIL`) and deploy. Apply the Supabase schema before signing in. Proof uploads are limited to 3 MB. Authentication attempt counters use reserved rows in the private codes table; no additional schema migration is required.
 
+To enable signed PDF receipts, set `RECEIPT_SIGNATURE_BASE64` to the base64 of the cropped signature PNG as a server-only Production secret and redeploy. The signed PDF is attached to new approval emails and available to the approved tenant from Receipts. Keep the original screenshot and cropped signature out of the repository.
+
 The browser UI source is in `src/portal.js`. `npm run build:client` bundles only the Iconsax icons used by the app into `public/portal.js`. The normal dev and production build scripts run this step automatically. The agreement PDF and on-screen text share the template in `content/residential-tenancy-agreement.txt`.
 
 Run `npm test` for authentication, authorization, onboarding, payment validation and frontend regression checks. See `docs/security-review.md` for the security review and its limits.

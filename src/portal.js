@@ -112,12 +112,16 @@ function render(){
      '</span><div class="rent-card-summary"><h2>Your rent</h2><p>'+message+'</p></div><span class="tag '+(active?'good':'')+'">'+status+'</span></div>'+
      (receipt ? '<dl class="details"><div><dt>Amount paid</dt><dd>'+money(rent.amount)+'</dd></div></dl>'+(active?'':btn('Refresh status','refresh-rent'))
        : btn('Activate my rent', 'activate', 'primary'))+'</article>';
-   const receiptCard = '<article class="card"><h2>Payment receipt</h2><p>'+
-     (receipt ? esc(receipt.name) : 'Add your receipt when you activate your rent.')+'</p>'+
-     (receipt ? '<p>'+(active?'Your official receipt was sent to '+esc(user.email)+'.':message)+'</p>'
-       : btn('Activate my rent', 'activate', 'primary'))+'</article>';
+   const issuedDate = rent?.approvedAt && new Date(rent.approvedAt).toLocaleDateString('en-GB', {
+     day: 'numeric', month: 'short', year: 'numeric', timeZone: 'Africa/Lagos',
+   });
+   const receiptRow = active
+     ? '<tr><td>'+esc(issuedDate || '—')+'</td><td>'+esc(receipt.number)+'</td><td><a class="btn receipt-download" href="/api/receipt" download aria-label="Download receipt '+esc(receipt.number)+'">'+icon('Download')+'<span>Download</span></a></td></tr>'
+     : '<tr><td colspan="3">'+(receipt ? 'Your receipt will be available after your payment is approved.' : 'No receipts issued yet.')+'</td></tr>';
+   const receiptTable = '<div class="table-scroll"><table class="tenant-table receipt-table" aria-label="Issued rent receipts">'+
+     '<thead><tr><th scope="col">Date</th><th scope="col">Receipt number</th><th scope="col">Action</th></tr></thead><tbody>'+receiptRow+'</tbody></table></div>';
    app.innerHTML = page === 'receipts'
-     ? shell('Receipts', content('Rent receipt', 'Track your payment receipt.', receiptCard, true))
+     ? shell('Receipts', content('Rent receipts', 'View and download your issued rent receipts.', receiptTable, true))
      : shell('Home', content('Welcome, '+esc(user.first), 'Manage your Wakajaye rent and receipts in one place.', rentCard));
    if (page === 'activate') {
      app.insertAdjacentHTML('beforeend', '<dialog class="rent-sheet" aria-labelledby="rent-sheet-title">'+
@@ -574,9 +578,10 @@ async function go(p){
    if (isAdminPortal && destination !== 'admin') p = destination;
    if (!isAdminPortal && destination !== 'home') p = destination;
  }
- if (p === 'refresh-rent') {
+ if (p === 'refresh-rent' || p === 'receipts') {
    ({ user } = await api('session'+(isAdminPortal?'?portal=admin':'')));
-   p = tenantPage();
+   const destination = tenantPage();
+   if (p === 'refresh-rent' || destination !== 'home') p = destination;
  }
  if(p==='toggle' && !isAdminPortal){mode=mode==='create'?'signin':'create';return render()}
  if(p==='logout'){await api('logout',{portal:isAdminPortal?'admin':'tenant'});user=null;email='';adminRecords=null;p='login'}

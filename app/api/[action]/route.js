@@ -47,13 +47,13 @@ function json(data, status = 200) {
   return NextResponse.json(data, { status, headers: { 'Cache-Control': 'no-store' } });
 }
 
-async function sendMail(email, subject, textContent, receipt) {
+async function sendMail(email, subject, textContent, attachment) {
   const key = process.env.BREVO_API_KEY;
   const sender = process.env.BREVO_FROM_EMAIL;
   if (!key || !sender) throw new RequestError('Email delivery is unavailable.', 503);
   const payload = { sender: { name: 'Wakajaye', email: sender }, to: [{ email }], subject, textContent };
-  if (receipt) {
-    payload.attachment = [{ name: 'wakajaye-rent-receipt.txt', content: Buffer.from(receipt).toString('base64') }];
+  if (attachment) {
+    payload.attachment = [{ name: attachment.name, content: attachment.bytes.toString('base64') }];
   }
   try {
     const response = await fetch('https://api.brevo.com/v3/smtp/email', {
@@ -69,13 +69,51 @@ async function sendMail(email, subject, textContent, receipt) {
   throw new RequestError('Email delivery failed. Try again.', 502);
 }
 
+function tenantName(profile) {
+  return [profile.first, profile.last].filter(Boolean).join(' ');
+}
+
+function receiptNumber(id) {
+  return 'WJ-' + String(id).padStart(6, '0');
+}
+
+async function officialReceipt(id, tenant, rent) {
+  const number = receiptNumber(id);
+  const name = rent.issuedTo ?? tenantName(tenant);
+  const encodedSignature = process.env.RECEIPT_SIGNATURE_BASE64;
+  if (!encodedSignature) {
+    // Preserve the existing text receipt until the private signing asset is configured.
+    const amount = new Intl.NumberFormat('en-NG', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(rent.amount);
+    const text = [
+      'WAKAJAYE HOSTEL',
+      'Official rent receipt ' + number,
+      '',
+      'Tenant: ' + name,
+      ...(rent.paid ? ['Payment date: ' + rent.paid] : []),
+      'Amount received: NGN ' + amount,
+    ].join('\n');
+    return { name: 'wakajaye-receipt-' + number + '.txt', bytes: Buffer.from(text), type: 'text/plain; charset=utf-8' };
+  }
+  const signature = Buffer.from(encodedSignature, 'base64');
+  if (signature.subarray(0, 8).toString('hex') !== '89504e470d0a1a0a') {
+    throw new RequestError('The receipt signature has not been configured.', 503);
+  }
+  const { receiptPdf } = await import('../../../lib/receipt-pdf.mjs');
+  const bytes = await receiptPdf({ number, name, email: tenant.email, rent }, signature);
+  return { name: 'wakajaye-receipt-' + number + '.pdf', bytes, type: 'application/pdf' };
+}
+
 async function loadUser(db, email, admin) {
   if (!email) return null;
   const { rows: [tenant] } = await db.query(
-    'SELECT t.profile,t.guarantor,t.rent,r.name AS receipt_name,r.status AS receipt_status FROM tenants t LEFT JOIN receipts r USING(email) WHERE t.email=$1', [email],
+    'SELECT t.profile,t.guarantor,t.rent,r.id AS receipt_id,r.name AS receipt_name,r.status AS receipt_status FROM tenants t LEFT JOIN receipts r USING(email) WHERE t.email=$1', [email],
   );
   if (!tenant) return null;
-  const receipt = tenant.receipt_status ? { name: tenant.receipt_name, status: tenant.receipt_status } : null;
+  const receipt = tenant.receipt_status ? {
+    name: tenant.receipt_name,
+    status: tenant.receipt_status,
+    ...(tenant.receipt_status === 'verified' ? { number: receiptNumber(tenant.receipt_id) } : {}),
+  } : null;
   return {
     ...JSON.parse(tenant.profile || '{}'),
     email,
@@ -88,6 +126,21 @@ async function loadUser(db, email, admin) {
 
 async function read(db, request, action, email, admin) {
   if (action === 'session') return json({ user: await loadUser(db, email, admin) });
+  if (action === 'receipt') {
+    if (!email) throw new RequestError('Sign in to download your receipt.', 401);
+    const { rows: [record] } = await db.query(
+      "SELECT r.id,t.profile,t.rent FROM receipts r JOIN tenants t USING(email) WHERE r.email=$1 AND r.status='verified'", [email],
+    );
+    if (!record) throw new RequestError('No issued receipt is available.', 404);
+    const tenant = { ...JSON.parse(record.profile || '{}'), email };
+    const attachment = await officialReceipt(record.id, tenant, JSON.parse(record.rent));
+    return new Response(attachment.bytes, { headers: {
+      'Content-Type': attachment.type,
+      'Content-Disposition': 'attachment; filename="' + attachment.name + '"',
+      'Cache-Control': 'private, no-store',
+      'X-Content-Type-Options': 'nosniff',
+    } });
+  }
   if (!email || email !== admin) throw new RequestError('Admin access required.', 403);
   if (action === 'admin') return json(await adminData(db, request.nextUrl.searchParams));
   if (action === 'tenant') {
@@ -252,17 +305,17 @@ async function mutate(db, action, data, email, admin, token, secure, adminScope 
       const { rows: [receipt] } = await db.query("SELECT id, email FROM receipts WHERE id=$1 AND status='pending'", [data.id]);
       if (!receipt) throw new RequestError('This receipt is no longer waiting for review.', 404);
       const tenant = await loadUser(db, receipt.email, admin);
-      const amount = tenant.rent.amount.toLocaleString('en-NG', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-      const text = [
-        'WAKAJAYE HOSTEL',
-        'Official rent receipt WJ-' + String(receipt.id).padStart(6, '0'),
-        '',
-        'Tenant: ' + tenant.first + ' ' + tenant.last,
-        ...(tenant.rent.paid ? ['Payment date: ' + tenant.rent.paid] : []),
-        'Amount received: NGN ' + amount,
-      ].join('\n');
-      await sendMail(receipt.email, 'Your official Wakajaye rent receipt', 'Your rent payment has been verified. Your official receipt is attached.', text);
-      const rent = { ...tenant.rent, approvedAt: new Date().toISOString(), approvedBy: email };
+      const rent = {
+        ...tenant.rent,
+        approvedAt: new Date().toISOString(),
+        approvedBy: email,
+        issuedTo: tenantName(tenant),
+      };
+      const attachment = await officialReceipt(receipt.id, tenant, rent);
+      const receiptDescription = attachment.type === 'application/pdf' ? 'signed PDF receipt' : 'official receipt';
+      await sendMail(receipt.email, 'Your official Wakajaye rent receipt',
+        'Your rent payment has been verified. Your ' + receiptDescription +
+        ' is attached and available under Receipts in your Wakajaye dashboard.', attachment);
       await db.query('UPDATE tenants SET rent=$1 WHERE email=$2', [JSON.stringify(rent), receipt.email]);
       await db.query("UPDATE receipts SET status='verified' WHERE id=$1", [receipt.id]);
       break;
@@ -319,6 +372,7 @@ async function handle(request, { params }) {
     const validToken = typeof rawToken === 'string' && /^[A-Za-z0-9_-]{43}$/.test(rawToken);
     const token = validToken ? sessionDigest(rawToken, adminScope) : '';
     if (!write && action === 'session' && !token) return json({ user: null });
+    if (action === 'receipt' && !token) throw new RequestError('Sign in to download your receipt.', 401);
     if ((adminActions.has(action) || (write && !['code','verify'].includes(action))) && !token) {
       throw new RequestError(adminScope ? 'Admin sign-in required.' : 'Sign in to continue.', adminScope ? 403 : 401);
     }
