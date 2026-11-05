@@ -12,7 +12,7 @@ body::after{z-index:-1;inset:0;background:linear-gradient(145deg,rgba(18,13,11,.
 .btn.primary:disabled{background:#e9e9e6;border-color:#e9e9e6;color:#5f5f5c;opacity:1}
 
 /* The form grid contributes 14px of this 40px gap. */
-form.stack > .btn.primary{margin-top:26px}
+form.stack > .btn.primary{margin-top:26px;min-height:38px;height:38px;max-height:38px}
 
 .rent-sheet {
   position: fixed;
@@ -303,7 +303,7 @@ button[aria-busy="true"]:disabled { cursor: progress; }
     border-radius: 0;
     padding: max(24px, env(safe-area-inset-top)) max(20px, env(safe-area-inset-right)) max(24px, env(safe-area-inset-bottom)) max(20px, env(safe-area-inset-left));
   }
-  .tenant-shell > .main { min-height: 0; padding-bottom: calc(104px + env(safe-area-inset-bottom)); }
+  .tenant-shell > .main { min-height: 0; padding-bottom: calc(88px + env(safe-area-inset-bottom)); }
   .tenant-shell > .main > .bar { display: none; }
   .tenant-shell .sidebar .nav {
     position: absolute;
@@ -325,7 +325,9 @@ button[aria-busy="true"]:disabled { cursor: progress; }
   .tenant-shell .sidebar .nav .btn {
     flex: 1 1 auto;
     min-width: 0;
-    min-height: 54px;
+    min-height: 38px;
+    height: 38px;
+    max-height: 38px;
     flex-direction: row;
     justify-content: center;
     gap: 6px;
@@ -337,11 +339,11 @@ button[aria-busy="true"]:disabled { cursor: progress; }
   }
   .tenant-shell .sidebar .nav .active { color: #0a0a0a; background: #f4f4f3; }
   .tenant-shell .nav svg { display: block; width: 18px; height: 18px; flex: none; }
-  #notice { bottom: calc(104px + env(safe-area-inset-bottom)); }
+  #notice { bottom: calc(88px + env(safe-area-inset-bottom)); }
 }
 
 .money-field { position: relative; }
-.payment-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.payment-fields { display: grid; grid-template-columns: 1fr; gap: 12px; }
 .payment-fields label small { display: inline; font-weight: 400; color: #5f5f5c; }
 .payment-total { display: flex; justify-content: space-between; gap: 12px; font-weight: 600; }
 .action-row { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }

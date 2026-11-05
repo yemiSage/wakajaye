@@ -21,7 +21,9 @@ Trap by Aayush Mayank is bundled locally. Source: https://befonts.com/trap-sans-
 
 ## Vercel
 
-Import this repository on Vercel with the Next.js framework preset and the repository root as the root directory. Set the three required server variables above (`SUPABASE_DB_URL`, `BREVO_API_KEY`, `BREVO_FROM_EMAIL`) and deploy. Apply the Supabase schema before signing in. Proof uploads are limited to 3 MB. Authentication attempt counters use reserved rows in the private codes table; no additional schema migration is required.
+Import this repository on Vercel with the Next.js framework preset and the repository root as the root directory. Set the three required server variables above (`SUPABASE_DB_URL`, `BREVO_API_KEY`, `BREVO_FROM_EMAIL`) and deploy. Apply the Supabase schema before signing in. Tenants can attach up to five proof files. Images up to 10 MB each are compressed in the browser to 1 MB or less; the combined upload, including PDFs, stays within 3 MB. Browser-supported image formats are converted to JPG when needed. Authentication attempt counters use reserved rows in the private codes table; no additional schema migration is required.
+
+Rent activation asks for the total amount paid and saves exactly what the tenant enters. It does not add charges or show a calculated total. Receipts keep the entered rent amount and the existing fixed electricity (₦42,000) and sanitation (₦12,000) lines without increasing the saved payment total. Existing issued receipts retain their original amounts.
 
 To enable signed PDF receipts, set `RECEIPT_SIGNATURE_BASE64` to the base64 of the cropped signature PNG as a server-only Production secret and redeploy. The signed PDF is attached to new approval emails and available to the approved tenant from Receipts. Keep the original screenshot and cropped signature out of the repository.
 

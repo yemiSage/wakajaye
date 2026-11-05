@@ -1,5 +1,6 @@
-import { amountInKobo, maxPaymentKobo, paymentCharges, paymentLines } from '../lib/payment-charges.mjs';
-import { maxProofBytes, maxProofFiles } from '../lib/payment-proof.mjs';
+import { amountInKobo, maxPaymentKobo, paymentLines } from '../lib/payment-charges.mjs';
+import { maxProofFiles } from '../lib/payment-proof.mjs';
+import { prepareProofFiles } from '../lib/image-compression.mjs';
 
 const app=document.querySelector('#app'), notice=document.querySelector('#notice');
 const logo='<img class="logo" src="/wordmark.svg" alt="Wakajaye">';
@@ -142,14 +143,14 @@ function render(){
      : '<tr><td colspan="3">'+(receipt ? message : 'No receipts issued yet.')+'</td></tr>';
    const receiptTable = '<div class="table-scroll"><table class="tenant-table receipt-table" aria-label="Issued rent receipts">'+
      '<thead><tr><th scope="col">Date</th><th scope="col">Receipt number</th><th scope="col">Action</th></tr></thead><tbody>'+receiptRow+'</tbody></table></div>'+
-     (receipt && !active ? reviewReason+'<div class="action-row">'+btn(editLabel,'activate','primary')+'</div>' : '');
+     (receipt && !active ? reviewReason : '');
    app.innerHTML = page === 'receipts'
      ? shell('Receipts', content('Rent receipts', 'View and download your issued rent receipts.', receiptTable, true))
      : shell('Home', content('Welcome, '+esc(user.first), 'Manage your Wakajaye rent and receipts in one place.', rentCard));
    if (page === 'activate') {
      app.insertAdjacentHTML('beforeend', '<dialog class="rent-sheet" aria-labelledby="rent-sheet-title">'+
        '<div class="row"><h2 id="rent-sheet-title">'+(receipt ? 'Edit payment' : 'Activate my rent')+'</h2>'+btn('Close', 'close-sheet', 'quiet')+'</div>'+
-       '<p>Enter what you paid for each charge and attach your proof of payment.</p>'+
+       '<p>Enter the total amount you paid and attach your proof of payment.</p>'+
        reviewReason+form('activate', paymentFields(rent)+
          uploadField()+submit(receipt ? 'Resubmit for review' : 'Save'))+'</dialog>');
      const dialog = app.querySelector('dialog');
@@ -169,7 +170,7 @@ function render(){
  if (!activeForm) return;
  const submitButton = activeForm.querySelector('button:not([type])');
  const syncValidity = () => {
-   submitButton.disabled = activeForm.dataset.busy === 'true' ||
+   submitButton.disabled = activeForm.dataset.busy === 'true' || activeForm.dataset.preparingProofs === 'true' ||
      Boolean(activeForm.querySelector(':invalid, [name="consent"]:disabled'));
  };
  activeForm.addEventListener('input', syncValidity);
@@ -544,21 +545,19 @@ function showTenant(tenant) {
 
 function uploadField() {
   return '<label class="upload-card">'+
-    '<input type="file" accept=".pdf,.jpg,.jpeg,.png" multiple class="receipt-file">'+
+    '<input type="file" accept=".pdf,image/*" multiple class="receipt-file">'+
     '<span class="upload-symbol">'+icon('Upload')+'</span>'+
     '<span class="upload-title">Add proof files</span>'+
-    '<span class="upload-description">Up to five PDFs, JPGs, or PNGs · 3 MB total</span>'+
+    '<span class="upload-description">Up to five PDFs or images. Images up to 10 MB each are compressed to 1 MB or less. 3 MB total after compression.</span>'+
     '<span class="upload-selected" aria-live="polite"></span></label><ul class="proof-list"></ul>';
 }
 
 function paymentFields(rent) {
-  return '<div class="payment-fields">'+paymentCharges.map(([key,label]) => {
-    const required = key === 'houseRent';
-    const value = rent?.charges?.[key] ?? (required ? rent?.amount : undefined);
-    return '<label><span>'+label+(required ? '' : ' <small>(optional)</small>')+
-      '</span><div class="money-field"><input name="'+key+'" type="text" inputmode="decimal" autocomplete="off" placeholder="0.00"'+
-      ' value="'+esc(value > 0 ? formatAmount(String(value)) : '')+'"'+(required ? ' required' : '')+'><span aria-hidden="true">₦</span></div></label>';
-  }).join('')+'</div><div class="payment-total"><span>Total paid</span><output data-payment-total>₦0.00</output></div>';
+  const value = rent?.amount ?? rent?.charges?.houseRent;
+  return '<div class="payment-fields"><label><span>Total amount paid</span>'+
+    '<div class="money-field"><input name="amount" type="text" inputmode="decimal" autocomplete="off" placeholder="0.00"'+
+    ' value="'+esc(value > 0 ? formatAmount(String(value)) : '')+'" required><span aria-hidden="true">₦</span></div></label>'+
+    '</div>';
 }
 
 function formatAmount(value) {
@@ -572,18 +571,13 @@ function formatAmount(value) {
 function initializeAmount() {
   const inputs = app.querySelectorAll('.money-field input');
   if (!inputs.length) return;
-  const total = app.querySelector('[data-payment-total]');
   const validate = () => {
-    let totalKobo = 0;
     for (const input of inputs) {
       const raw = input.value.replace(/,/g,'');
       const kobo = raw === '' && !input.required ? 0 : amountInKobo(raw);
       const valid = kobo !== null && kobo >= (input.required ? 1 : 0) && kobo <= maxPaymentKobo;
       input.setCustomValidity(valid ? '' : 'Enter a valid payment amount.');
-      if (valid) totalKobo += kobo;
     }
-    if (totalKobo > maxPaymentKobo) inputs[0].setCustomValidity('The total cannot exceed ₦1,000,000,000.');
-    total.value = money(totalKobo / 100);
   };
   for (const input of inputs) {
     let previous = input.value;
@@ -610,10 +604,11 @@ function initializeUpload() {
   const card = input.closest('.upload-card');
   const list = app.querySelector('.proof-list');
   const feedback = card.querySelector('.upload-selected');
+  let preparing = false;
   paymentProofs = (user?.receipt?.files || []).map((file, index) => ({ ...file, keep: index }));
   const renderFiles = (message = '') => {
     const count = paymentProofs.length;
-    input.setCustomValidity(count ? '' : 'Add at least one proof file.');
+    input.setCustomValidity(preparing ? 'Wait for image compression to finish.' : count ? '' : 'Add at least one proof file.');
     card.classList.toggle('has-file', count > 0);
     card.classList.toggle('has-error', Boolean(message));
     feedback.textContent = message || (count ? count+' of '+maxProofFiles+' files added' : '');
@@ -621,23 +616,35 @@ function initializeUpload() {
       '<button type="button" class="btn quiet" data-remove-proof="'+index+'" aria-label="Remove '+esc(file.name)+'">'+icon('Trash')+'Remove</button></li>').join('');
     input.form.dispatchEvent(new Event('change'));
   };
-  input.addEventListener('change', () => {
+  input.addEventListener('change', async () => {
+    if (preparing || input.form.dataset.busy === 'true') return;
     const selected = Array.from(input.files);
     input.value = '';
-    if (selected.some(file => !/\.(pdf|png|jpe?g)$/i.test(file.name) || !file.size)) {
-      return renderFiles('Choose a PDF, JPG, or PNG file.');
-    }
-    const combined = [...paymentProofs, ...selected];
-    if (combined.length > maxProofFiles) return renderFiles('Remove a file before adding more than five.');
-    if (combined.reduce((sum, file) => sum + file.size, 0) > maxProofBytes) {
-      return renderFiles('Keep all proof files at 3 MB or less in total.');
-    }
-    paymentProofs = combined;
+    if (!selected.length) return;
+    const uploadForm = input.form;
+    preparing = true;
+    uploadForm.dataset.preparingProofs = 'true';
+    input.disabled = true;
+    card.setAttribute('aria-busy', 'true');
     renderFiles();
+    feedback.textContent = 'Preparing proof files…';
+    let message = '';
+    try {
+      const prepared = await prepareProofFiles([...paymentProofs, ...selected]);
+      if (app.contains(input)) paymentProofs = prepared;
+    } catch (error) {
+      message = error.message;
+    } finally {
+      preparing = false;
+      delete uploadForm.dataset.preparingProofs;
+      input.disabled = false;
+      card.removeAttribute('aria-busy');
+      if (app.contains(input)) renderFiles(message);
+    }
   });
   list.addEventListener('click', event => {
     const button = event.target.closest('[data-remove-proof]');
-    if (!button || input.form.dataset.busy === 'true') return;
+    if (!button || preparing || input.form.dataset.busy === 'true') return;
     paymentProofs.splice(Number(button.dataset.removeProof), 1);
     renderFiles();
     input.focus();
@@ -792,7 +799,7 @@ app.addEventListener('click', async event => {
   }
 });
 app.addEventListener('submit',async e=>{
- const f=e.target;if(!f.dataset.form)return;if(f.dataset.busy==='true'){e.preventDefault();return;}e.preventDefault();const data=Object.fromEntries(new FormData(f));const error=f.querySelector('.error'),b=f.querySelector('button:not([type])');error.hidden=true;f.dataset.busy='true';setButtonLoading(b,true);
+ const f=e.target;if(!f.dataset.form)return;if(f.dataset.busy==='true'||f.dataset.preparingProofs==='true'){e.preventDefault();return;}e.preventDefault();const data=Object.fromEntries(new FormData(f));const error=f.querySelector('.error'),b=f.querySelector('button:not([type])');error.hidden=true;f.dataset.busy='true';setButtonLoading(b,true);
  try{
   const action=f.dataset.form;
   if (action === 'admin-search') {
@@ -820,13 +827,13 @@ app.addEventListener('submit',async e=>{
   if(action==='code'){email=data.email.trim().toLowerCase();await api('code',{email,mode,portal:isAdminPortal?'admin':'tenant'});return await go('verify')}
   if(action==='verify'){user=(await api('verify',{email,code:data.code,portal:isAdminPortal?'admin':'tenant'})).user;return await go(tenantPage())}
   if (action === 'activate') {
-    data.charges = Object.fromEntries(paymentCharges.map(([key]) => [key, data[key].replace(/,/g,'')]));
+    data.amount = data.amount.replace(/,/g,'');
     data.submittedAt = user.rent?.submittedAt ?? null;
     data.proofs = await Promise.all(paymentProofs.map(entry => {
       if (entry.keep !== undefined) return { keep: entry.keep };
       return new Promise((resolve,reject) => {
         const reader = new FileReader();
-        reader.onerror = reject;
+        reader.onerror = () => reject(Error('Could not read “'+entry.name+'”. Add the file again.'));
         reader.onload = () => resolve({ name:entry.name, file:reader.result.split(',')[1] });
         reader.readAsDataURL(entry);
       });
@@ -835,7 +842,19 @@ app.addEventListener('submit',async e=>{
   user=(await api(action,data)).user;
   if(action==='activate')toast('Payment submitted for landlord approval.');
   return await go(tenantPage());
- }catch(e){error.textContent=e.message||'Could not complete the request.';error.hidden=false;}finally{setButtonLoading(b,false);delete f.dataset.busy;f.dispatchEvent(new Event('change'));}
+ } catch (e) {
+   if (f.dataset.form === 'activate') {
+     await go('home');
+     toast('Failed to save.');
+   } else {
+     error.textContent = e.message || 'Could not complete the request.';
+     error.hidden = false;
+   }
+ } finally {
+   setButtonLoading(b,false);
+   delete f.dataset.busy;
+   f.dispatchEvent(new Event('change'));
+ }
 });
 email = app.querySelector('[name="email"]')?.value || '';
 render();

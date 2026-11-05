@@ -273,6 +273,69 @@ test('invalid payment amounts and disguised uploads are rejected before storing 
   assert.equal(writes,0);
 });
 
+test('rent activation saves exactly the entered amount and retains receipt lines and compressed proofs', async () => {
+  const tenant = 'save-test@example.com';
+  let rent;
+  let receipt;
+  let committed = false;
+  const db = { async query(sql, params) {
+    if (sql === 'COMMIT') committed = true;
+    if (sql.startsWith('SELECT email FROM sessions')) return { rows:[{email:tenant}] };
+    if (sql.startsWith('SELECT t.profile')) return { rows:[{
+      profile:JSON.stringify({first:'Test',gender:'Female',dob:'2000-01-01',agreement:{version:3}}),
+      guarantor:'{}',rent:rent && JSON.stringify(rent),receipt_status:receipt && 'pending',
+      receipt_id:7,receipt_name:receipt?.name,receipt_mime:receipt?.mime,receipt_size:receipt?.bytes.length,
+    }] };
+    if (sql.startsWith('UPDATE tenants SET rent')) rent = JSON.parse(params[0]);
+    if (sql.startsWith('INSERT INTO receipts')) receipt = {name:params[1],mime:params[2],bytes:params[3]};
+    return {rows:[]};
+  }, release() {} };
+  const context = routeContext({
+    agreementVersion:3,process:{env:{SUPABASE_DB_URL:'test'}},supabaseCA:'test',
+    pg:{Pool:class { async connect() { return db; } }},
+  });
+  const bytes = Buffer.alloc(proofs.maxImageProofBytes);
+  Buffer.from('ffd8ff','hex').copy(bytes);
+  const response = await call(context,'activate',{
+    method:'POST',cookies:{wj:'a'.repeat(43)},
+    body:{amount:'150000',charges:{houseRent:'1',electricity:'0',sanitation:'999'},proofs:[{name:'proof.jpg',file:bytes.toString('base64')}]},
+  });
+  const result = await response.json();
+  assert.equal(response.status,200,JSON.stringify(result));
+  assert(committed);
+  assert.equal(result.user.receipt.status,'pending');
+  assert.equal(result.user.rent.amount,150000);
+  assert.deepEqual(rent.charges,{houseRent:150000,electricity:42000,sanitation:12000});
+  assert.deepEqual(charges.paymentLines(rent),[['House rent',150000],['Electricity (light)',42000],['Sanitation',12000]]);
+  assert.deepEqual(receipt.bytes,bytes);
+  const tooLarge = Buffer.concat([bytes,Buffer.from([0])]);
+  assert.throws(()=>context.decodeProof({name:'large.jpg',file:tooLarge.toString('base64')}),/compressed to 1 MB/);
+  const pdf = Buffer.alloc(proofs.maxProofBytes,0);
+  pdf.write('%PDF-1.7');
+  assert.equal(context.decodeProof({name:'large.pdf',file:pdf.toString('base64')}).size,proofs.maxProofBytes);
+});
+
+test('activation hides fixed charge fields and receipts have no edit payment action', () => {
+  const app = {dataset:{portal:'tenant'},innerHTML:'',querySelectorAll:()=>[],querySelector:()=>null,addEventListener(){}};
+  const context = vm.createContext({
+    ...charges,document:{querySelector:selector=>selector==='#app'?app:{},addEventListener(){}},
+    __WAKAJAYE_ICONS__:{},Intl,Date,setTimeout,clearTimeout,
+  });
+  const source = readFileSync('src/portal.js','utf8').replace(/^import .*;\n/gm,'');
+  vm.runInContext(source.slice(0,source.indexOf('email = app.querySelector')),context);
+  const fields = context.paymentFields({amount:254000,charges:{houseRent:200000}});
+  assert.match(fields,/name="amount"/);
+  assert.match(fields,/Total amount paid/);
+  assert.match(fields,/value="254,000"/);
+  assert.doesNotMatch(fields,/electricity|sanitation/i);
+  assert.doesNotMatch(fields,/<output|data-payment-total/);
+  vm.runInContext("user={email:'test@example.com',first:'Test',rent:{amount:254000,review:{reason:'Please replace your proof.'}},receipt:{status:'correction'}};page='receipts';render();",context);
+  assert.match(app.innerHTML,/Please replace your proof/);
+  assert.doesNotMatch(app.innerHTML,/data-go="activate"|Edit payment|Edit and resubmit/);
+  vm.runInContext("page='home';render();",context);
+  assert.match(app.innerHTML,/data-go="activate"/);
+});
+
 test('review reasons survive reads and resubmission replaces selected proofs without changing the receipt id',async()=>{
   const tenant = 'tenant@example.com';
   const profile = JSON.stringify({agreement:{version:3}});
@@ -305,7 +368,8 @@ test('review reasons survive reads and resubmission replaces selected proofs wit
   await assert.rejects(submit({...payment,proofs:Array(6).fill(upload('bad.pdf',initial))}),/one and five/);
   await submit({...payment,proofs:[upload('first.pdf',initial),upload('retain.pdf',keep)]});
   const first = JSON.parse(rent);
-  assert.equal(first.amount,200000.31);
+  assert.equal(first.amount,200000.01);
+  assert.deepEqual(first.charges,{houseRent:200000.01,electricity:42000,sanitation:12000});
   await context.mutate(db,'review-payment',{id:7,submittedAt:first.submittedAt,decision:'correction',reason:'Upload a clearer first page.'},address,address,'',true,true);
   assert.equal((await context.loadUser(db,tenant,address)).receipt.status,'correction');
   await assert.rejects(submit({...payment,proofs:[{keep:1}],submittedAt:'old'}),/submission has changed/);
@@ -350,6 +414,51 @@ test('an existing tenant sees a correction on their open dashboard without losin
   assert.match(app.innerHTML,/Correction requested/);
   assert.match(app.innerHTML,/Please replace the proof/);
   assert.match(app.innerHTML,/Edit and resubmit/);
+});
+
+test('failed activation saves return to the home dashboard with a failure notice', async () => {
+  for (const failure of ['server','network']) {
+    const events = {};
+    const app = {dataset:{portal:'tenant'},innerHTML:'',querySelectorAll:()=>[],querySelector:()=>null,
+      addEventListener:(name,handler)=>{events[name]=handler;}};
+    const notice = {hidden:true,textContent:''};
+    const fixture = {email:'tenant@example.com',first:'Test',gender:'Female',dob:'2000-01-01',
+      guarantor:true,agreement:{version:3},rent:null,receipt:null};
+    const error = {hidden:true,textContent:''};
+    const form = {dataset:{form:'activate'},querySelector:selector=>selector==='.error'?error:{},dispatchEvent(){}};
+    let requests = 0;
+    const context = vm.createContext({
+      ...charges,...proofs,fixture,Event,Intl,Date,
+      document:{querySelector:selector=>selector==='#app'?app:notice,addEventListener(){}},
+      __WAKAJAYE_ICONS__:{},setTimeout:()=>0,clearTimeout(){},
+      FormData:class { *[Symbol.iterator]() { yield ['amount','200,000']; } },
+      FileReader:class { readAsDataURL() { this.result='data:image/jpeg;base64,/9j/'; this.onload(); } },
+      fetch:async (url,options)=>{
+        requests++;
+        assert.equal(url,'/api/activate');
+        assert.equal(JSON.parse(options.body).amount,'200000');
+        assert.equal(JSON.parse(options.body).charges,undefined);
+        if (failure === 'network') throw new TypeError('Failed to fetch');
+        return Response.json({error:'The tenant database is unavailable.'},{status:503});
+      },
+    });
+    const source = readFileSync('src/portal.js','utf8').replace(/^import .*;\n/gm,'');
+    vm.runInContext(source.slice(0,source.indexOf('email = app.querySelector')),context);
+    context.setButtonLoading = () => {};
+    vm.runInContext("user=fixture;page='activate';paymentProofs=[{name:'proof.jpg'}];",context);
+    await events.submit({target:form,preventDefault(){}});
+    assert.equal(requests,1);
+    assert.equal(vm.runInContext('page',context),'home');
+    assert.match(app.innerHTML,/Welcome, Test/);
+    assert.match(app.innerHTML,/Activate my rent/);
+    assert.doesNotMatch(app.innerHTML,/<dialog/);
+    assert.equal(notice.textContent,'Failed to save.');
+    assert.equal(notice.hidden,false);
+    assert.equal(fixture.rent,null);
+    assert.equal(fixture.receipt,null);
+    assert.equal(form.dataset.busy,undefined);
+    assert.equal(error.hidden,true);
+  }
 });
 
 test('amounts group thousands and untrusted tenant data cannot escape HTML attributes',()=>{

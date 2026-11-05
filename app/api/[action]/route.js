@@ -5,8 +5,8 @@ import { ADMIN_EMAIL, adminActions, readActions, writeActions, usesAdminSession,
 import { adminData, tenantDetails } from '../../../lib/admin.mjs';
 import supabaseCA from './supabase-ca';
 import { agreementForDate, agreementVersion } from '../../../lib/agreement.mjs';
-import { amountInKobo, maxPaymentKobo, paymentCharges, paymentLines } from '../../../lib/payment-charges.mjs';
-import { maxProofBytes, maxProofFiles, paymentStatus, proofAt, proofFiles } from '../../../lib/payment-proof.mjs';
+import { amountInKobo, fixedPaymentCharges, maxPaymentKobo, paymentLines } from '../../../lib/payment-charges.mjs';
+import { maxImageProofBytes, maxProofBytes, maxProofFiles, paymentStatus, proofAt, proofFiles } from '../../../lib/payment-proof.mjs';
 
 export const runtime = 'nodejs';
 
@@ -199,6 +199,9 @@ function decodeProof(data) {
   if (!name || !mime || bytes.length > maxProofBytes || bytes.toString('base64') !== encoded) {
     throw new RequestError('Choose a PDF, JPG, or PNG up to 3 MB.');
   }
+  if (mime.startsWith('image/') && bytes.length > maxImageProofBytes) {
+    throw new RequestError('Images must be compressed to 1 MB or less before uploading. Add the image again.');
+  }
   return { name, mime, size: bytes.length, bytes };
 }
 
@@ -341,28 +344,22 @@ async function mutate(db, action, data, email, admin, token, secure, adminScope 
       }
       let charges;
       let totalKobo;
-      if (data.charges === undefined) {
-        // Older browser bundles still submit a single amount.
+      if (data.amount !== undefined || data.charges === undefined) {
         totalKobo = amountInKobo(data.amount);
       } else {
         if (!data.charges || typeof data.charges !== 'object' || Array.isArray(data.charges)) {
           throw new RequestError('Enter valid amounts for each payment charge.');
         }
-        charges = {};
-        totalKobo = 0;
-        for (const [key, label] of paymentCharges) {
-          const value = data.charges[key] ?? '';
-          const kobo = value === '' && key !== 'houseRent' ? 0 : amountInKobo(value);
-          if (kobo === null || (key === 'houseRent' && kobo === 0)) {
-            throw new RequestError('Enter a valid amount for ' + label.toLowerCase() + '.');
-          }
-          charges[key] = kobo / 100;
-          totalKobo += kobo;
+        const houseRentKobo = amountInKobo(data.charges.houseRent);
+        if (houseRentKobo === null || houseRentKobo === 0) {
+          throw new RequestError('Enter a valid amount for house rent.');
         }
+        totalKobo = houseRentKobo;
       }
       if (totalKobo === null || totalKobo < 1 || totalKobo > maxPaymentKobo) {
         throw new RequestError('Enter a valid payment amount.');
       }
+      charges = { houseRent: totalKobo / 100, ...fixedPaymentCharges };
       const files = await readProofSubmission(db, data, current);
       const proofs = files.map(({ name, mime, size }) => ({ name, mime, size }));
       const rent = { amount: totalKobo / 100, ...(charges ? { charges } : {}), proofs, submittedAt: new Date().toISOString() };
