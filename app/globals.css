@@ -156,7 +156,7 @@ button[aria-busy="true"]:disabled { cursor: progress; }
 
 .auth-card[data-screen="guarantor"] > h1 { padding-top: 12px; }
 
-.auth-card[data-screen="consent"] { width: min(100%, 506px); }
+.auth-card[data-screen="consent"] { width: min(100%, 640px); }
 .auth-card[data-screen="consent"] .terms {
   width: 100%;
   height: 400px;
