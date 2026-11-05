@@ -75,7 +75,7 @@ test('agreement checkbox stays locked until the end and requires explicit confir
     },
     addEventListener:(name,fn)=>{events['form-'+name]=fn;},
   };
-  const app = {innerHTML:'',querySelectorAll:()=>[],addEventListener(){},
+  const app = {dataset:{portal:'tenant'},innerHTML:'',querySelectorAll:()=>[],addEventListener(){},
     querySelector:selector=>selector==='form[data-form]'?form:null};
   const context=vm.createContext({
     document:{querySelector:selector=>selector==='#app'?app:{},addEventListener(){}},
@@ -98,4 +98,40 @@ test('agreement checkbox stays locked until the end and requires explicit confir
   assert.equal(button.disabled,false);
   assert.match(app.innerHTML,/Download agreement \(PDF\)/);
   assert.match(app.innerHTML,/<strong>Bank: Zenith Bank/);
+});
+
+test('admin URL has its own navigation and does not require tenant onboarding', () => {
+  const source=readFileSync('src/portal.js','utf8');
+  for (const portal of ['tenant','admin']) {
+    const app={dataset:{portal},innerHTML:'',querySelectorAll:()=>[],querySelector:()=>null,addEventListener(){}};
+    const context=vm.createContext({
+      document:{querySelector:selector=>selector==='#app'?app:{},addEventListener(){}},
+      __WAKAJAYE_ICONS__:{},Intl,Date,setTimeout,clearTimeout,
+    });
+    vm.runInContext(source.slice(0,source.indexOf('email = app.querySelector')),context);
+    vm.runInContext("user={email:'owner@example.com',admin:true};",context);
+    assert.equal(vm.runInContext('tenantPage()',context),portal==='admin'?'admin':'profile');
+    const navigation=vm.runInContext("shell('Dashboard','')",context);
+    assert.equal(navigation.includes('data-go="admin"'),portal==='admin');
+    assert.equal(navigation.includes('data-go="home"'),portal==='tenant');
+    vm.runInContext("user={email:'tenant@example.com',admin:false};",context);
+    if (portal==='admin') assert.equal(vm.runInContext('tenantPage()',context),'forbidden');
+    vm.runInContext('user=null; page="login"; render();',context);
+    assert.equal(app.innerHTML.includes('Admin sign in'),portal==='admin');
+  }
+});
+
+test('admin OTP requests reject non-admin addresses before sending mail or changing codes',async()=>{
+  const source=readFileSync('app/api/[action]/route.js','utf8');
+  const start=source.indexOf('async function mutate(');
+  const end=source.indexOf('async function handle(',start);
+  const context=vm.createContext({
+    RequestError:class extends Error {constructor(message,status){super(message);this.status=status;}},
+    emailField:data=>data.email, field:(data,key)=>data[key],
+  });
+  vm.runInContext(source.slice(start,end),context);
+  const db={query(){throw Error('Unauthorized query');}};
+  for (const action of ['code','verify']) {
+    await assert.rejects(context.mutate(db,action,{portal:'admin',email:'other@example.com',mode:'create',code:'123456'},null,'owner@example.com','',false),error=>error.status===403);
+  }
 });

@@ -127,13 +127,15 @@ async function mutate(db, action, data, email, admin, token, secure) {
   if (action === 'code') {
     const address = emailField(data);
     if (!['create', 'signin'].includes(data.mode)) throw new RequestError('Invalid sign-in request.');
+    if (data.portal === 'admin' && address !== admin) throw new RequestError('Admin access required.', 403);
+    const codeMode = data.portal === 'admin' ? 'admin' : data.mode;
     const { rows: [previous] } = await db.query('SELECT issued FROM codes WHERE email=$1', [address]);
     if (previous && now - previous.issued < 30) throw new RequestError('Wait 30 seconds before requesting another code.', 429);
     const code = String(randomInt(100000, 1000000));
     const salt = randomBytes(16).toString('hex');
     await db.query(
       'INSERT INTO codes VALUES($1,$2,$3,0,$4) ON CONFLICT (email) DO UPDATE SET digest=excluded.digest, issued=excluded.issued, attempts=0, mode=excluded.mode',
-      [address, salt + ':' + digest(salt + code), now, data.mode],
+      [address, salt + ':' + digest(salt + code), now, codeMode],
     );
     await sendMail(address, 'Your Wakajaye verification code', 'Your Wakajaye code is ' + code + '. It expires in 10 minutes.');
     return json({ ok: true });
@@ -142,6 +144,7 @@ async function mutate(db, action, data, email, admin, token, secure) {
   if (action === 'verify') {
     const address = emailField(data);
     const code = field(data, 'code', 6);
+    if (data.portal === 'admin' && address !== admin) throw new RequestError('Admin access required.', 403);
     const { rows: [record] } = await db.query('SELECT * FROM codes WHERE email=$1', [address]);
     if (!record || now - record.issued > 600 || record.attempts >= 5) throw new RequestError('Request a fresh code.');
     const [salt, expected] = record.digest.split(':');

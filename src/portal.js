@@ -1,6 +1,7 @@
 const app=document.querySelector('#app'), notice=document.querySelector('#notice');
-const logo='<img class="logo" src="wordmark.svg" alt="Wakajaye">';
+const logo='<img class="logo" src="/wordmark.svg" alt="Wakajaye">';
 const icons = __WAKAJAYE_ICONS__;
+const isAdminPortal = app.dataset.portal === 'admin';
 const icon = name => icons[name] || '';
 const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const input = (label, name, type = 'text', attrs = '', required = true) =>
@@ -31,7 +32,7 @@ const money=v=>new Intl.NumberFormat('en-NG',{style:'currency',currency:'NGN'}).
 function toast(message){notice.textContent=message;notice.hidden=false;clearTimeout(toast.timer);toast.timer=setTimeout(()=>notice.hidden=true,5500)}
 async function api(path,data){const r=await fetch('/api/'+path,data===undefined?{}:{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});const b=await r.json();if(!r.ok)throw Error(b.error||'Something went wrong.');return b}
 function auth(title,desc,body,step=''){return '<main class="auth"><section class="auth-card" data-screen="'+esc(page)+'" aria-labelledby="auth-title"><header>'+logo+'</header>'+(step?'<p class="eyebrow">'+step+'</p>':'')+'<h1 id="auth-title">'+title+'</h1><p class="intro">'+desc+'</p>'+body+'</section></main>'}
-function shell(title,body){return '<div class="frame"><div class="shell"><aside class="sidebar"><div class="brand">'+logo+'</div><nav class="nav" aria-label="Tenant portal">'+([['Home','home'],['Receipts','receipts'],...(user.admin?[['Admin','admin'],['Tenants','tenants'],['Review','review']]:[])]).map(([n,p])=>btn(icon(n)+n,p,'quiet '+(page===p?'active':'')).replace('data-go=',(page===p?'aria-current="page" ':'')+'data-go=')).join('')+'</nav><footer><div class="account" title="'+esc(user.email)+'">'+esc(user.email)+'</div>'+btn(icon('Logout')+'Sign out','logout','quiet')+'</footer></aside><main class="main'+(page==='review'?' receipt-review':'')+'"><header class="bar">'+title+'</header>'+body+'</main></div></div>'}
+function shell(title,body){return '<div class="frame"><div class="shell"><aside class="sidebar"><div class="brand">'+logo+'</div><nav class="nav" aria-label="'+(isAdminPortal?'Admin portal':'Tenant portal')+'">'+(isAdminPortal?[['Admin','admin'],['Tenants','tenants'],['Review','review']]:[['Home','home'],['Receipts','receipts']]).map(([n,p])=>btn(icon(n)+n,p,'quiet '+(page===p?'active':'')).replace('data-go=',(page===p?'aria-current="page" ':'')+'data-go=')).join('')+'</nav><footer><div class="account" title="'+esc(user.email)+'">'+esc(user.email)+'</div>'+btn(icon('Logout')+'Sign out','logout','quiet')+'</footer></aside><main class="main'+(page==='review'?' receipt-review':'')+'"><header class="bar">'+title+'</header>'+body+'</main></div></div>'}
 function content(title,desc,body,narrow=false){return '<section class="content '+(narrow?'narrow':'')+'"><h1>'+title+'</h1><p>'+desc+'</p>'+body+'</section>'}
 function render(){
  if (page === 'agreement-error') {
@@ -39,7 +40,21 @@ function render(){
    return;
  }
  const rent=user?.rent, receipt=user?.receipt;
- if(page==='login')app.innerHTML=auth(mode==='create'?'Create your account':'Get into your account','Enter your email to receive a one-time code.',form('code',input('Email address','email','email','autocomplete="email" placeholder="you@example.com" value="'+esc(email)+'"')+submit('Send code'))+'<p class="switch">'+(mode==='create'?'Already have an account?':'New to Wakajaye?')+' <button class="link" data-go="toggle">'+(mode==='create'?'Sign in':'Create an account')+'</button></p>');
+ if (page === 'login') {
+   const title = isAdminPortal ? 'Admin sign in' : mode === 'create' ? 'Create your account' : 'Get into your account';
+   app.innerHTML = auth(title, isAdminPortal ? 'Enter your administrator email to receive a sign-in code.' : 'Enter your email to receive a one-time code.',
+     form('code', input('Email address','email','email','autocomplete="email" placeholder="you@example.com" value="'+esc(email)+'"')+submit('Send code'))+
+     (isAdminPortal ? '' : '<p class="switch">'+(mode==='create'?'Already have an account?':'New to Wakajaye?')+' <button class="link" data-go="toggle">'+(mode==='create'?'Sign in':'Create an account')+'</button></p>'));
+ }
+ if (page === 'forbidden') {
+   app.innerHTML = auth('Admin access required', 'This account does not have permission to open the admin dashboard.',
+     btn('Sign out', 'logout', 'primary')+'<p class="switch"><a href="/">Go to tenant portal</a></p>');
+   return;
+ }
+ if (page === 'admin-error') {
+   app.innerHTML = auth('Unable to load dashboard', 'Please retry loading your admin dashboard.', btn('Try again', 'admin', 'primary'));
+   return;
+ }
  if(page==='verify')app.innerHTML=auth('Check your email','Enter the six-digit code for <strong>'+esc(email)+'</strong>.',form('verify',input('Verification code','code','text','inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6"')+submit('Verify email'))+'<p class="switch"><button class="link" data-go="resend">Resend code</button> · <button class="link" data-go="login">Change email</button></p>');
  if (page === 'profile') {
    const names = '<div class="pair">' +
@@ -497,6 +512,7 @@ function initializeUpload() {
 
 function tenantPage() {
  if (!user) return 'login';
+ if (isAdminPortal) return user.admin ? 'admin' : 'forbidden';
  if (!user.first || !user.gender || !user.dob) return 'profile';
  if (!user.guarantor) return 'guarantor';
  if (user.agreement?.version !== agreementVersion) return 'consent';
@@ -508,14 +524,18 @@ async function go(p){
    p = 'home';
  }
  if (p === 'activate' && user.receipt) p = 'home';
- if (['home','activate','receipts','review','admin','tenants'].includes(p) && tenantPage() !== 'home') p = tenantPage();
+ if (['home','activate','receipts','review','admin','tenants'].includes(p)) {
+   const destination = tenantPage();
+   if (isAdminPortal && destination !== 'admin') p = destination;
+   if (!isAdminPortal && destination !== 'home') p = destination;
+ }
  if (p === 'refresh-rent') {
    ({ user } = await api('session'));
    p = tenantPage();
  }
- if(p==='toggle'){mode=mode==='create'?'signin':'create';return render()}
- if(p==='logout'){await api('logout',{});user=null;email='';p='login'}
- if(p==='resend'){await api('code',{email,mode});return toast('A new code was requested.')}
+ if(p==='toggle' && !isAdminPortal){mode=mode==='create'?'signin':'create';return render()}
+ if(p==='logout'){await api('logout',{});user=null;email='';adminRecords=null;p='login'}
+ if(p==='resend'){await api('code',{email,mode,portal:isAdminPortal?'admin':'tenant'});return toast('A new code was requested.')}
  if (p.startsWith('tenant:')) {
    const { tenant } = await api('tenant?email='+encodeURIComponent(p.slice(7)));
    return showTenant(tenant);
@@ -577,8 +597,8 @@ app.addEventListener('submit',async e=>{
     adminPage = 1;
     return await go(page);
   }
-  if(action==='code'){email=data.email.trim().toLowerCase();await api('code',{email,mode});return await go('verify')}
-  if(action==='verify'){user=(await api('verify',{email,code:data.code})).user;return await go(tenantPage())}
+  if(action==='code'){email=data.email.trim().toLowerCase();await api('code',{email,mode,portal:isAdminPortal?'admin':'tenant'});return await go('verify')}
+  if(action==='verify'){user=(await api('verify',{email,code:data.code,portal:isAdminPortal?'admin':'tenant'})).user;return await go(tenantPage())}
   if(action==='activate'){if(data.file.size>3*1024*1024)throw Error('Choose a file no larger than 3 MB.');const file=data.file;data.file=await new Promise((resolve,reject)=>{const r=new FileReader();r.onerror=reject;r.onload=()=>resolve(r.result.split(',')[1]);r.readAsDataURL(file)});data.name=file.name;}
   user=(await api(action,data)).user;
   if(action==='activate')toast('Payment submitted for landlord approval.');
@@ -591,7 +611,12 @@ render();
  try {
    ({user} = await api('session'));
    if (!user) return;
-   page = tenantPage();
+   const destination = tenantPage();
+   if (destination === 'admin') {
+     try { await go('admin'); } catch (error) { page = 'admin-error'; toast(error.message); render(); }
+     return;
+   }
+   page = destination;
    if (page === 'consent') await loadAgreement();
  } catch (error) {
    if (page === 'consent') page = 'agreement-error';
