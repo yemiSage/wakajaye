@@ -242,11 +242,32 @@ button[aria-busy="true"]:disabled { cursor: progress; }
 .tenant-sheet h2 { min-width: 0; overflow-wrap: anywhere; }
 
 @media (max-width: 767px) {
-  .auth { display: block; padding: 0; background: white; }
+  html, body, #app {
+    width: 100%;
+    height: 100%;
+    overflow: hidden;
+    overscroll-behavior: none;
+  }
+  body {
+    position: fixed;
+    inset: 0;
+    height: 100svh;
+    background: white;
+  }
+  body::before, body::after { display: none; }
+  .auth {
+    display: block;
+    height: 100%;
+    min-height: 0;
+    padding: 0;
+    background: white;
+    overflow: hidden auto;
+    overscroll-behavior: none;
+  }
   .auth > .auth-card {
     width: 100%;
     max-width: none;
-    min-height: 100dvh;
+    min-height: 100%;
     padding: max(32px, env(safe-area-inset-top)) max(20px, env(safe-area-inset-right)) max(32px, env(safe-area-inset-bottom)) max(20px, env(safe-area-inset-left));
     border: 0;
     border-radius: 0;
@@ -254,14 +275,18 @@ button[aria-busy="true"]:disabled { cursor: progress; }
     animation: none;
   }
   .frame, .shell, .content { width: 100%; max-width: none; }
-  .main { min-height: 0; }
+  .frame { position: relative; height: 100%; }
+  .sidebar { padding-top: max(8px, env(safe-area-inset-top)); }
+  .main { min-height: 0; overflow: hidden auto; overscroll-behavior: none; }
+  .content { animation: none; overflow-wrap: anywhere; }
   .tenant-sheet, .date-sheet { width: 100%; max-width: 100%; }
+  .tenant-sheet, .date-sheet, .rent-sheet, .terms { overscroll-behavior: none; }
   .rent-sheet {
     inset: 0;
     width: 100%;
     max-width: 100%;
-    height: 100dvh;
-    max-height: 100dvh;
+    height: 100svh;
+    max-height: 100svh;
     margin: 0;
     border: 0;
     border-radius: 0;
@@ -269,7 +294,7 @@ button[aria-busy="true"]:disabled { cursor: progress; }
   }
   .tenant-shell > .main { min-height: 0; padding-bottom: calc(104px + env(safe-area-inset-bottom)); }
   .tenant-shell .sidebar .nav {
-    position: fixed;
+    position: absolute;
     z-index: 40;
     left: 50%;
     bottom: max(16px, env(safe-area-inset-bottom));
